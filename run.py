@@ -7,11 +7,15 @@
 import argparse
 import logging
 import os
+import random
 import shutil
 from typing import *
 
+from pytorch_lightning.plugins import DDPPlugin
+
 import gin
 import torch
+import torch.nn as nn
 from pytorch_lightning import Trainer
 from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning import seed_everything
@@ -20,7 +24,6 @@ from pytorch_lightning.callbacks import (
     ModelCheckpoint,
     TQDMProgressBar,
 )
-from pytorch_lightning.plugins import DDPPlugin
 
 from utils.select_option import select_callback, select_dataset, select_model
 
@@ -67,6 +70,7 @@ def run(
     save_last: bool = True,
     grad_max_norm=0.0,
     grad_clip_algorithm="norm",
+    add_noise: float=0.0,
 ):
 
     logging.getLogger("lightning").setLevel(logging.ERROR)
@@ -93,6 +97,7 @@ def run(
     logdir = os.path.join(logbase, exp_name)
     os.makedirs(logdir, exist_ok=True)
     os.makedirs(os.path.join(logdir, exp_name), exist_ok=True)
+    print(f":: Info :: Logdir - {logdir}")
 
     logger = pl_loggers.TensorBoardLogger(
         save_dir=logdir,
@@ -142,6 +147,7 @@ def run(
         max_epochs=max_epochs,
         max_steps=max_steps,
         accelerator="gpu",
+        # accelerator="cpu",
         replace_sampler_ddp=False,
         strategy=ddp_plugin,
         check_val_every_n_epoch=1,
@@ -165,6 +171,7 @@ def run(
     model = select_model(model_name=model_name)
     model.logdir = logdir
     if run_train:
+        print(f":: Log :: Run Train")
         best_ckpt = os.path.join(logdir, "best.ckpt")
         if os.path.exists(best_ckpt):
             os.remove(best_ckpt)
@@ -173,16 +180,35 @@ def run(
             shutil.rmtree(version0, True)
 
         trainer.fit(model, data_module, ckpt_path=ckpt_path)
-
+        if add_noise > 0:
+            for i in range(3):
+                noisy_data_module = select_dataset(
+                    dataset_name=dataset_name,
+                    scene_name=scene_name,
+                    datadir=datadir,
+                    add_noise=add_noise * (i + 1),
+                )
+                trainer.fit(model, noisy_data_module, ckpt_path=ckpt_path)
     if run_eval:
+        print(f":: Log :: Run Eval")
         ckpt_path = (
             f"{logdir}/best.ckpt"
             if model_name != "mipnerf360"
             else f"{logdir}/last.ckpt"
         )
-        trainer.test(model, data_module, ckpt_path=ckpt_path)
+        if add_noise == 0:
+            trainer.test(model, data_module, ckpt_path=ckpt_path)
+        else:
+            noisy_data_module = select_dataset(
+                dataset_name=dataset_name,
+                scene_name=scene_name,
+                datadir=datadir,
+                add_noise=add_noise * (i + 1),
+            )
+            trainer.test(model, noisy_data_module, ckpt_path=ckpt_path)
 
     if run_render:
+        print(f":: Log :: Run Render")
         ckpt_path = (
             f"{logdir}/best.ckpt"
             if model_name != "mipnerf360"
@@ -212,13 +238,19 @@ if __name__ == "__main__":
         help="gin bindings",
     )
     parser.add_argument(
+        "--add_noise", type=float, default=0, help="proportion of gaussian noise"
+    )
+    parser.add_argument(
         "--ckpt_path", type=str, default=None, help="path to checkpoints"
     )
     parser.add_argument(
         "--scene_name", type=str, default=None, help="scene name to render"
     )
-    parser.add_argument("--seed", type=int, default=220901, help="seed to use")
+    parser.add_argument("--seed", type=int, default=random.randint(10, 99), help="seed to use")
+    # parser.add_argument("--seed", type=int, default="220901", help="seed to use")
     args = parser.parse_args()
+
+    print(f"\n:: Log :: Program started with '{args}'\n")
 
     ginbs = []
     if args.ginb:
@@ -235,4 +267,7 @@ if __name__ == "__main__":
         resume_training=args.resume_training,
         ckpt_path=args.ckpt_path,
         seed=args.seed,
+        datadir="/home/seun1105/nerf-factory/data/",
+        logbase="/home/seun1105/logs",
+        add_noise=args.add_noise,
     )

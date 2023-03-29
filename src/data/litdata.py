@@ -163,6 +163,7 @@ class LitDataLF(LitData):
         # MipNeRF360 specific
         near: Optional[float] = None,
         far: Optional[float] = None,
+        add_noise: bool=False,
     ):
         (
             self.images,
@@ -183,6 +184,7 @@ class LitDataLF(LitData):
             test_skip=test_skip,
             near=near,
             far=far,
+            add_noise=add_noise,
         )
 
         super(LitDataLF, self).__init__(datadir)

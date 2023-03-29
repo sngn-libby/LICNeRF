@@ -9,6 +9,7 @@
 # ------------------------------------------------------------------------------------
 
 import os
+import random
 
 import gin
 import numpy as np
@@ -330,7 +331,7 @@ class LitMipNeRF(LitModel):
         self.log("test/lpips", lpips["test"], on_epoch=True)
 
         if self.trainer.is_global_zero:
-            image_dir = os.path.join(self.logdir, "render_model")
+            image_dir = os.path.join(self.logdir, f"render_model_{random.randint(10, 99)}")
             os.makedirs(image_dir, exist_ok=True)
             store_image.store_image(image_dir, rgbs)
 

@@ -93,6 +93,7 @@ def load_lf_data(
     cam_scale_factor: float,
     near: Optional[float],
     far: Optional[float],
+    add_noise=0,
 ):
 
     basedir = os.path.join(datadir, scene_name)
@@ -133,9 +134,11 @@ def load_lf_data(
         ] * cam_cnt
 
     # assume all images have the same size as training image
+    print(f"train_imgfile: {'{}/train/rgb'.format(basedir)}")
     train_imgfile = find_files("{}/train/rgb".format(basedir), exts=["*.png", "*.jpg"])[
         ::train_skip
     ]
+    print(f"train_imgfile cnt: {len(train_imgfile)}")
     val_imgfile = find_files(
         "{}/validation/rgb".format(basedir), exts=["*.png", "*.jpg"]
     )[::val_skip]
@@ -148,6 +151,7 @@ def load_lf_data(
     i_all = np.arange(len(train_imgfile) + len(val_imgfile) + len(test_imgfile))
     i_split = (i_train, i_val, i_test, i_all)
 
+    print(f"base_dir: {basedir}, image cnt: {len(i_all)}")
     images = (
         np.stack(
             [
@@ -158,6 +162,16 @@ def load_lf_data(
         / 255.0
     )
     h, w = images[0].shape[:2]
+
+    if add_noise > 0:
+        mean = 0
+        var = 0.1
+        sigma = var ** 0.5
+        c = images[0].shape[-1]
+        gauss = np.random.normal(mean, sigma, (h, w, c)).reshape(h, w, c) * add_noise
+        print(f":: Log :: Add {add_noise * 100}% Noise to image ({images[0].shape} * {len(images)})")
+        for i, img in enumerate(images):
+            images[i] = img + gauss
 
     intrinsics = np.stack(
         [parse_txt(intrinsics_file) for intrinsics_file in intrinsics_files]

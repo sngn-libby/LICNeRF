@@ -52,6 +52,7 @@ def select_dataset(
     dataset_name: str,
     datadir: str,
     scene_name: str,
+    add_noise=0,
 ):
     if dataset_name == "blender":
         data_fun = LitDataBlender
@@ -63,6 +64,7 @@ def select_dataset(
         data_fun = LitDataTnT
     elif dataset_name == "lf":
         data_fun = LitDataLF
+        datadir = "/".join([datadir.rstrip("/"), "lf_data"])
     elif dataset_name == "nerf_360_v2":
         data_fun = LitDataNeRF360V2
     elif dataset_name == "shiny_blender":
@@ -73,6 +75,7 @@ def select_dataset(
     return data_fun(
         datadir=datadir,
         scene_name=scene_name,
+        add_noise=add_noise,
     )
 
 
