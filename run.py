@@ -39,6 +39,13 @@ def str2bool(v):
         raise Exception("Boolean value expected.")
 
 
+def print_session_log(log_str: str, f="=", n=150):
+    log_str = " " + log_str + " "
+    print()
+    print("{s:{f}^{n}}".format(s=log_str, f=f, n=n))
+    print()
+
+
 @gin.configurable()
 def run(
     ginc: str,
@@ -79,6 +86,7 @@ def run(
     exp_name = (
         model_name + "_" + dataset_name + "_" + scene_name + "_" + str(seed).zfill(3)
     )
+    print(f":: Log :: [ Model ] {exp_name}")
     if postfix is not None:
         exp_name += "_" + postfix
     if debug:
@@ -166,12 +174,13 @@ def run(
         dataset_name=dataset_name,
         scene_name=scene_name,
         datadir=datadir,
+        add_noise=add_noise,
     )
 
     model = select_model(model_name=model_name)
     model.logdir = logdir
     if run_train:
-        print(f":: Log :: Run Train")
+        print_session_log("Train session starts")
         best_ckpt = os.path.join(logdir, "best.ckpt")
         if os.path.exists(best_ckpt):
             os.remove(best_ckpt)
@@ -180,35 +189,25 @@ def run(
             shutil.rmtree(version0, True)
 
         trainer.fit(model, data_module, ckpt_path=ckpt_path)
-        if add_noise > 0:
-            for i in range(3):
-                noisy_data_module = select_dataset(
-                    dataset_name=dataset_name,
-                    scene_name=scene_name,
-                    datadir=datadir,
-                    add_noise=add_noise * (i + 1),
-                )
-                trainer.fit(model, noisy_data_module, ckpt_path=ckpt_path)
+
     if run_eval:
-        print(f":: Log :: Run Eval")
+        print_session_log("Test session starts")
         ckpt_path = (
             f"{logdir}/best.ckpt"
             if model_name != "mipnerf360"
             else f"{logdir}/last.ckpt"
         )
-        if add_noise == 0:
-            trainer.test(model, data_module, ckpt_path=ckpt_path)
-        else:
-            noisy_data_module = select_dataset(
-                dataset_name=dataset_name,
-                scene_name=scene_name,
-                datadir=datadir,
-                add_noise=add_noise * (i + 1),
-            )
-            trainer.test(model, noisy_data_module, ckpt_path=ckpt_path)
+        trainer.test(model, data_module, ckpt_path=ckpt_path)
+        # noisy_data_module = select_dataset(
+        #     dataset_name=dataset_name,
+        #     scene_name=scene_name,
+        #     datadir=datadir,
+        #     add_noise=add_noise,
+        # )
+        # trainer.test(model, noisy_data_module, ckpt_path=ckpt_path)
 
     if run_render:
-        print(f":: Log :: Run Render")
+        print_session_log("Render session starts")
         ckpt_path = (
             f"{logdir}/best.ckpt"
             if model_name != "mipnerf360"
@@ -257,7 +256,7 @@ if __name__ == "__main__":
         ginbs.extend(args.ginb)
 
     logging.info(f"Gin configuration files: {args.ginc}")
-    logging.info(f"Gin bindings: {ginbs}")
+    logging.info(f"Gin bindings: {args.ginb}")
 
     gin.parse_config_files_and_bindings(args.ginc, ginbs)
     run(

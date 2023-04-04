@@ -134,11 +134,9 @@ def load_lf_data(
         ] * cam_cnt
 
     # assume all images have the same size as training image
-    print(f"train_imgfile: {'{}/train/rgb'.format(basedir)}")
     train_imgfile = find_files("{}/train/rgb".format(basedir), exts=["*.png", "*.jpg"])[
         ::train_skip
     ]
-    print(f"train_imgfile cnt: {len(train_imgfile)}")
     val_imgfile = find_files(
         "{}/validation/rgb".format(basedir), exts=["*.png", "*.jpg"]
     )[::val_skip]
@@ -151,7 +149,7 @@ def load_lf_data(
     i_all = np.arange(len(train_imgfile) + len(val_imgfile) + len(test_imgfile))
     i_split = (i_train, i_val, i_test, i_all)
 
-    print(f"base_dir: {basedir}, image cnt: {len(i_all)}")
+    print(f":: Log :: base_dir: {basedir}, image cnt: {len(i_all)}")
     images = (
         np.stack(
             [

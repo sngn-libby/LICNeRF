@@ -52,7 +52,7 @@ def select_dataset(
     dataset_name: str,
     datadir: str,
     scene_name: str,
-    add_noise=0,
+    add_noise: float=0,
 ):
     if dataset_name == "blender":
         data_fun = LitDataBlender

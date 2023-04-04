@@ -8,7 +8,7 @@ LitData.batch_sampler = "all_images"
 ## MipNeRF Standard Specific Arguments
 
 run.model_name = "mipnerf"
-run.max_steps = 1000000
+run.max_steps = 3000000
 run.log_every_n_steps = 100
 
 LitData.load_radii = True
