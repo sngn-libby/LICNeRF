@@ -1,0 +1,4 @@
+## Vimeo Specific Arguments
+
+run.dataset_name = "vimeo90k"
+run.datadir = "D:/datasets/vimeo90k"

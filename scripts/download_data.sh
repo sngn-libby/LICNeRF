@@ -1,18 +1,21 @@
 dname=$1
+dirpath=$2
+
+echo $dname $dirpath
 
 case $dname in
     "nerf_synthetic")
         gdown https://drive.google.com/uc?id=18JxhpWD-4ZmuFKLzKlAw-w5PpzZxXOcG
         unzip nerf_synthetic.zip
         rm -rf __MACOSX
-        mv nerf_synthetic data/blender
+        mv nerf_synthetic $dirpath
         rm nerf_synthetic.zip
         ;;
     "nerf_llff")
         gdown https://drive.google.com/uc?id=16VnMcF1KJYxN9QId6TClMsZRahHNMW5g
         unzip nerf_llff_data.zip
         rm -rf __MACOSX
-        mv nerf_llff_data data/llff
+        mv nerf_llff_data $dirpath
         rm nerf_llff_data.zip
         ;;
     "nerf_real_360")
@@ -22,7 +25,7 @@ case $dname in
         mkdir nerf_real_360
         mv vasedeck nerf_real_360
         mv pinecone nerf_real_360
-        mv nerf_real_360 data/nerf_360
+        mv nerf_real_360 $dirpath
         rm nerf_real_360.zip
         ;;
     "tanks_and_temples")
@@ -31,14 +34,14 @@ case $dname in
         cd tanks_and_temples/tat_training_Truck
         cp -r "test" "validation"
         cd ../..
-        mv tanks_and_temples data
+        mv tanks_and_temples $dirpath
         rm tanks_and_temples.zip
         rm -rf __MACOSX
         ;;
     "lf")
         gdown 1gsjDjkbTh4GAR9fFqlIDZ__qR9NYTURQ
         unzip lf_data.zip
-        mv lf_data data
+        mv lf_data $dirpath
         rm -rf __MACOSX
         rm lf_data.zip
         ;;
@@ -46,13 +49,13 @@ case $dname in
         wget http://storage.googleapis.com/gresearch/refraw360/360_v2.zip
         mkdir 360_v2
         unzip 360_v2.zip -d 360_v2
-        mv 360_v2 data
+        mv 360_v2 $dirpath
         rm 360_v2.zip
         ;;
     "shiny_blender")
         wget https://storage.googleapis.com/gresearch/refraw360/ref.zip
         unzip ref.zip
-        mv refnerf data
+        mv refnerf $dirpath
         rm ref.zip
         python utils/preprocess_shiny_blender.py
         ;;
