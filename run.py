@@ -11,7 +11,7 @@ import random
 import shutil
 from typing import *
 
-from pytorch_lightning.plugins import DDPPlugin
+from pytorch_lightning.plugins import DDPPlugin, DeepSpeedPlugin
 
 import gin
 import torch
@@ -25,7 +25,7 @@ from pytorch_lightning.callbacks import (
     TQDMProgressBar,
 )
 
-from utils.select_option import select_callback, select_dataset, select_model
+from utils.select_option import select_callback, select_dataset, select_nerf_model
 
 
 def str2bool(v):
@@ -82,6 +82,9 @@ def run(
 
     logging.getLogger("lightning").setLevel(logging.ERROR)
     datadir = datadir.rstrip("/")
+    homedir = os.path.expanduser('~')
+    datadir = datadir.replace('~', homedir)
+    logbase = logbase.replace('~', homedir)
 
     exp_name = (
         model_name + "_" + dataset_name + "_" + scene_name + "_" + str(seed).zfill(3)
@@ -147,7 +150,6 @@ def run(
     callbacks += select_callback(model_name)
 
     ddp_plugin = DDPPlugin(find_unused_parameters=False) if num_devices > 1 else None
-
     trainer = Trainer(
         logger=logger if run_train else None,
         log_every_n_steps=log_every_n_steps,
@@ -155,7 +157,6 @@ def run(
         max_epochs=max_epochs,
         max_steps=max_steps,
         accelerator="gpu",
-        # accelerator="cpu",
         replace_sampler_ddp=False,
         strategy=ddp_plugin,
         check_val_every_n_epoch=1,
@@ -174,10 +175,10 @@ def run(
         dataset_name=dataset_name,
         scene_name=scene_name,
         datadir=datadir,
-        add_noise=add_noise,
+        # add_noise=add_noise,
     )
 
-    model = select_model(model_name=model_name)
+    model = select_nerf_model(model_name=model_name)
     model.logdir = logdir
     if run_train:
         print_session_log("Train session starts")
@@ -188,6 +189,7 @@ def run(
         if os.path.exists(version0):
             shutil.rmtree(version0, True)
 
+        # print(f"model.hparams: {model.hparams}")
         trainer.fit(model, data_module, ckpt_path=ckpt_path)
 
     if run_eval:
@@ -223,7 +225,7 @@ if __name__ == "__main__":
         action="append",
         help="gin config file",
     )
-    parser.add_argument(
+    parser.add_argument( # 일반 args 무제한 추가
         "--ginb",
         action="append",
         help="gin bindings",
@@ -258,7 +260,7 @@ if __name__ == "__main__":
     logging.info(f"Gin configuration files: {args.ginc}")
     logging.info(f"Gin bindings: {args.ginb}")
 
-    gin.parse_config_files_and_bindings(args.ginc, ginbs)
+    parse_gin_args = gin.parse_config_files_and_bindings(args.ginc, ginbs)
     run(
         ginc=args.ginc,
         ginb=ginbs,
@@ -266,7 +268,5 @@ if __name__ == "__main__":
         resume_training=args.resume_training,
         ckpt_path=args.ckpt_path,
         seed=args.seed,
-        datadir="/home/seun1105/nerf-factory/data/",
-        logbase="/home/seun1105/logs",
         add_noise=args.add_noise,
     )

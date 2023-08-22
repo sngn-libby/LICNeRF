@@ -12,6 +12,7 @@ import pytorch_lightning as pl
 import torch
 from piqa.lpips import LPIPS
 from piqa.ssim import SSIM
+from pytorch_msssim import ms_ssim
 
 import utils.store_image as store_image
 
@@ -44,6 +45,16 @@ class LitModel(pl.LightningModule):
             psnr = -10.0 * torch.log(mse) / np.log(10)
             psnr_list.append(psnr)
         return torch.stack(psnr_list)
+
+    @torch.no_grad()
+    def ms_ssim_each(self, preds, gts):
+        ssim_list = []
+        for (pred, gt) in zip(preds, gts):
+            pred = torch.clip(pred.permute((2, 0, 1)).unsqueeze(0).float(), 0, 1)
+            gt = torch.clip(gt.permute((2, 0, 1)).unsqueeze(0).float(), 0, 1)
+            ssim = ms_ssim(pred, gt)
+            ssim_list.append(ssim)
+        return torch.stack(ssim_list)
 
     @torch.no_grad()
     def ssim_each(self, preds, gts):

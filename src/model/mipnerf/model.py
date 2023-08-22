@@ -78,12 +78,16 @@ class MipNeRFMLP(nn.Module):
         init.xavier_uniform_(self.density_layer.weight)
         init.xavier_uniform_(self.rgb_layer.weight)
 
-    """
-    x: torch.Tensor, [batch, num_samples, feature]
-    condition: torch.Tensor, [batch, feature]
-    """
+    def forward(
+            self,
+            x: torch.Tensor, # samples_enc
+            condition: torch.Tensor # viewdirs_enc
+    ):
+        """
+        x: torch.Tensor, [batch, num_samples, feature]
+        condition: torch.Tensor, [batch, feature]
+        """
 
-    def forward(self, x, condition):
         num_samples, feat_dim = x.shape[1:]
         x = x.reshape(-1, feat_dim)
         inputs = x
@@ -93,7 +97,8 @@ class MipNeRFMLP(nn.Module):
             if idx % self.skip_layer == 0 and idx > 0:
                 x = torch.cat([x, inputs], dim=-1)
 
-        raw_density = self.density_layer(x).reshape(
+        raw_density = self.density_layer(x)
+        raw_density = raw_density.reshape(
             -1, num_samples, self.num_density_channels
         )
 
@@ -106,7 +111,8 @@ class MipNeRFMLP(nn.Module):
             x = self.views_linear[idx](x)
             x = self.net_activation(x)
 
-        raw_rgb = self.rgb_layer(x).reshape(-1, num_samples, self.num_rgb_channels)
+        raw_rgb = self.rgb_layer(x)
+        raw_rgb = raw_rgb.reshape(-1, num_samples, self.num_rgb_channels)
 
         return raw_rgb, raw_density
 
@@ -186,6 +192,7 @@ class MipNeRF(nn.Module):
             rgb = self.rgb_activation(raw_rgb)
             rgb = rgb * (1 + 2 * self.rgb_padding) - self.rgb_padding
             density = self.density_activation(raw_density + self.density_bias)
+
             comp_rgb, distance, acc, weights = helper.volumetric_rendering(
                 rgb, density, t_vals, rays["rays_d"], white_bkgd=white_bkgd
             )

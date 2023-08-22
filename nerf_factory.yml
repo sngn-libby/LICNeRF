@@ -1,4 +1,4 @@
-name: nerf_factory
+name: lic_nerf
 channels:
   - pytorch
   - nvidia
