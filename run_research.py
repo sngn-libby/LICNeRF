@@ -229,10 +229,6 @@ def run(
         "use_multiscale": use_multiscale,
         "train_nerf": train_nerf,
     }
-    lic_kwargs = {
-        "N": N,
-        "M": M,
-    }
     nerf_kwargs = {
         "num_samples":num_samples,
         "num_levels":num_levels,

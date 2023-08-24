@@ -266,6 +266,7 @@ class MipNeRFTransformedLIC(LitModel):
         out_enc = self.lic_model.compress(x_cat)
         out_dec = self.lic_model.decompress(out_enc["strings"], out_enc["shape"])
 
+        # compression model output contains x_rec and xd_rec
         x_hat = out_dec["x_hat"]
         x_rec = x_hat[:, :3, ...]
         xd_rec = x_hat[:, 3:, ...]

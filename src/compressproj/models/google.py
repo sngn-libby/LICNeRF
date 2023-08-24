@@ -589,12 +589,12 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
 
         y_hat = F.pad(y, (padding, padding, padding, padding))
 
+        y_height
         y_strings = []
         for i in range(y.size(0)):
             string = self._compress_ar(
                 y_hat[i : i + 1],
-                params[i : i + 1],
-                y_height,
+                params[i : i + 1],,
                 y_width,
                 kernel_size,
                 padding,

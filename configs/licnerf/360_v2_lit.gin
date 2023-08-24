@@ -26,8 +26,12 @@ run.log_every_n_steps = 100
 run.progressbar_refresh_rate = 5
 
 ### LIC configs
-run.N=192
-run.M=192
+LitJointAutoregressiveHierarchicalPriors.N=192
+LitJointAutoregressiveHierarchicalPriors.M=192
+LitJointAutoregressiveHierarchicalPriors.lr_init=1e-4
+LitJointAutoregressiveHierarchicalPriors.lr_final=5e-6
+LitJointAutoregressiveHierarchicalPriors.lr_scheduler_gamma=1/3
+LitJointAutoregressiveHierarchicalPriors.lr_mildestones=[150, 180, 210, 240]
 
 ### NerF configs
 run.lr_init = 5.0e-4

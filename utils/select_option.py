@@ -76,7 +76,6 @@ def select_research_model(
         research_model_name: str,
         lic_model_name: str,
         nerf_model_name: str,
-        train_kwargs: dict,
         lic_kwargs: dict,
         nerf_kwargs: dict,
         **kwargs
@@ -90,7 +89,6 @@ def select_research_model(
 
     return research_models[research_model_name](lic_model=lic_model,
                                                 nerf_model=nerf_model,
-                                                **train_kwargs,
                                                 **kwargs)
 
 
