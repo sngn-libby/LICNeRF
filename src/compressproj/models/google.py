@@ -430,6 +430,7 @@ class MeanScaleHyperprior(ScaleHyperprior):
         return {"x_hat": x_hat}
 
 
+@gin.configurable()
 @register_model("mbt2018")
 class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
     r"""Joint Autoregressive Hierarchical Priors model from D.
@@ -589,12 +590,11 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
 
         y_hat = F.pad(y, (padding, padding, padding, padding))
 
-        y_height
         y_strings = []
         for i in range(y.size(0)):
             string = self._compress_ar(
                 y_hat[i : i + 1],
-                params[i : i + 1],,
+                params[i : i + 1],
                 y_width,
                 kernel_size,
                 padding,

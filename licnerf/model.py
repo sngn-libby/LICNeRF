@@ -23,6 +23,7 @@ from src.model.mipnerf.model import MipNeRF
 from src.compressproj.layers import GDN, MaskedConv2d
 from src.compressproj.models.utils import conv, deconv
 from src.compressproj.losses import RateDistortionLoss
+from src.compressproj.utils.eval_model.__main__ import *
 from src.compressproj.models.sensetime import JointCheckerboardHierarchicalPriors
 
 __all__ = [
@@ -185,7 +186,12 @@ class MipNeRFTransformedLIC(LitModel):
 
         # nerf
         ret = self(
-            x, batch, self.randomized, self.white_bkgd, self.near, self.far
+            x=x, 
+            rays=batch, 
+            randomized=self.randomized, 
+            white_bkgd=self.white_bkgd, 
+            near=self.near, 
+            far=self.far,
         )
         rendered_results = ret["render"]
         rgb_coarse = rendered_results[0][0]
@@ -223,7 +229,6 @@ class MipNeRFTransformedLIC(LitModel):
         psnr = helper.mse2psnr(helper.img2mse(ret["x"], x_hat, None))
         # ssim = ms_ssim(ret["x"], x_hat) # image size should be larger than 160 due to the 4 downsamplings in ms-ssim
         self.log("train/lic_psnr", psnr, on_step=True, prog_bar=True, logger=True)
-        # self.log("train/lic_ms_ssim", ssim, on_step=True, prog_bar=True, logger=True)
         self.log("train/lic_loss", lic_loss, on_step=True)
 
         return lic_loss
@@ -235,68 +240,37 @@ class MipNeRFTransformedLIC(LitModel):
         self.lic_model.update(force=True)
         self.nerf_model.eval()
 
-        nerf_ret = self.forward_nerf(batch, False, self.white_bkgd, self.near, self.far)
-        K, B, N, C = nerf_ret.shape
-
         x = batch["target"]
-        xd = torch.stack(nerf_ret["density"], dim=0)
+
+        nerf_ret = self.forward_nerf(batch, False, self.white_bkgd, self.near, self.far)
+
+        rendered_results = nerf_ret["out"]
+        rgb_fine = rendered_results[1][0]
+
+        density = torch.stack(nerf_ret["density"], dim=0)
         rgb = torch.stack(nerf_ret["rgb"], dim=0)
-        t_vals = torch.stack(nerf_ret["t_vals"], dim=0)
+        x_density = torch.cat([rgb, density], dim=-1)
 
-        nerf_x = torch.cat([rgb, xd], dim=-1)
-        K, B, N, C = nerf_x.shape
-        nerf_x = self.nerf2img_shape(nerf_x)
+        K, B, N, C = x_density.shape
+        x_density = self.nerf2img_shape(x_density)
+        x = self.batch2img_shape(x, N)
 
-        if len(x.shape) == 2:
-            H = W = int(B ** (1/2))
-            C = x.shape[-1]
-            x = x.permute(1, 0)
-            x = x[None, :, :]
-            x = x.reshape(-1, C, H, W)
-            x = x.repeat(N, *([1] * (len(x.shape) - 1)))
-        else:
-            print(f":: ERROR :: len(x.shape) should be 2 - {x.shape}")
-            exit()
+        x_cat = torch.cat([x, x_density], dim=1)
+        x_cat = x_cat.type(torch.FloatTensor).to(self.device)
 
-        x_cat = torch.cat([x, nerf_x], dim=1)
-        x_cat = x_cat.type(nerf_x.dtype).to(self.device)
+        out = inference(self.lic_model, x_cat)
+        out["x"] = batch["target"]
+        out["render"] = rgb_fine
+        # out_enc = self.lic_model.compress(x_cat)
+        # out_dec = self.lic_model.decompress(out_enc["strings"], out_enc["shape"])
 
-        print(f":: DEBUG (val) :: x_cat.shape ({x_cat.shape})")
+        return out
 
-        out_enc = self.lic_model.compress(x_cat)
-        out_dec = self.lic_model.decompress(out_enc["strings"], out_enc["shape"])
-
-        # compression model output contains x_rec and xd_rec
-        x_hat = out_dec["x_hat"]
-        x_rec = x_hat[:, :3, ...]
-        xd_rec = x_hat[:, 3:, ...]
-
-        xd_rec = self.img2nerf_shape(xd_rec, K)
-        t_vals = self.img2nerf_shape(t_vals, K)
-
-        ret = []
-        for i in range(self.nerf_model.num_levels):
-            rgb = self.nerf_model.rgb_activation(rgb)
-            rgb = rgb * (1 + 2 * self.nerf_model.rgb_padding) - self.nerf_model.rgb_padding
-            comp_rgb, distance, acc, _ = helper.volumetric_rendering(
-                rgb[i], xd_rec, t_vals[i], batch["rays_d"], white_bkgd=self.white_bkgd
-            )
-            ret.append((comp_rgb, distance, acc))
-
-        rgb_fine = ret[1][0]
-
-        return {
-            "x_hat": x_rec,
-            "strings": out_enc["strings"],
-            "x": x,
-            "rgb": rgb_fine,
-        }
-
-    def validation_epoch_end(self, outputs):
+    def validation_epoch_end(self, out):
         # nerf
         val_image_sizes = self.trainer.datamodule.val_image_sizes
-        xs = self.alter_gather_cat(outputs, "x", val_image_sizes)
-        rgbs = self.alter_gather_cat(outputs, "rgb", val_image_sizes)
+        xs = self.alter_gather_cat(out, "x", val_image_sizes)
+        rgbs = self.alter_gather_cat(out, "render", val_image_sizes)
         psnr_mean = self.psnr_each(rgbs, xs).mean()
         ssim_mean = self.ssim_each(rgbs, xs).mean()
         lpips_mean = self.lpips_each(rgbs, xs).mean()
@@ -305,37 +279,37 @@ class MipNeRFTransformedLIC(LitModel):
         self.log("val/nerf_lpips", lpips_mean.item(), on_epoch=True, sync_dist=True)
 
         # compression
-        H, W = xs.shape[-2:]
-        x_hats = self.alter_gather_cat(outputs, "x_hat", val_image_sizes)
-        strings = self.alter_gather_cat(outputs, "strings", val_image_sizes)
-        bpp_loss = (sum(len(s[0]) for s in strings) * 8.0 / (H * W)).mean()
-        mse_loss = helper.img2mse(x_hats, xs, None).mean()
-        lic_loss = (self.lmbda * 255 ** 2 * mse_loss + bpp_loss).mean()
-        psnr_mean = self.psnr_each(x_hats, xs).mean()
-        # ms_ssim_mean = self.ms_ssim_each(x_hats, xs).mean()
-        self.log("val/lic_psnr", psnr_mean.item(), on_epoch=True, sync_dist=True)
-        # self.log("val/lic_ms_ssim", ms_ssim_mean.item(), on_epoch=True, sync_dist=True)
-        self.log("val/lic_bpp", bpp_loss.item(), on_epoch=True, sync_dist=True)
-        self.log("val/lic_loss", lic_loss.item(), on_epoch=True, sync_dist=True)
+        self.log("val/psnr",        out['psnr-rgb'], on_epoch=True, sync_dist=True)
+        self.log("val/ms-ssim",     out['ms-ssim-rgb'], on_epoch=True, sync_dist=True)
+        self.log("val/bpp",         out['bpp'], on_epoch=True, sync_dist=True)
+        self.log("val/enc_time",    out['encoding_time'], on_epoch=True, sync_dist=True)
+        self.log("val/dec_time",    out['decoding_time'], on_epoch=True, sync_dist=True)
 
-    def test_epoch_end(self, outputs):
+    def test_epoch_end(self, out):
         dmodule = self.trainer.datamodule
         all_image_sizes = (
             dmodule.all_image_sizes
             if not dmodule.eval_test_only
             else dmodule.test_image_sizes
         )
-        rgbs = self.alter_gather_cat(outputs, "rgb", all_image_sizes)
-        xs = self.alter_gather_cat(outputs, "x", all_image_sizes)
-        psnr = self.psnr(rgbs, xs, dmodule.i_train, dmodule.i_val, dmodule.i_test)
-        ssim = self.ssim(rgbs, xs, dmodule.i_train, dmodule.i_val, dmodule.i_test)
-        lpips = self.lpips(
+        xs = self.alter_gather_cat(out, "x", all_image_sizes)
+        rgbs = self.alter_gather_cat(out, "render", all_image_sizes)
+        psnrs = self.psnr(rgbs, xs, dmodule.i_train, dmodule.i_val, dmodule.i_test)
+        ssims = self.ssim(rgbs, xs, dmodule.i_train, dmodule.i_val, dmodule.i_test)
+        lpipses = self.lpips(
             rgbs, xs, dmodule.i_train, dmodule.i_val, dmodule.i_test
         )
 
-        self.log("test/nerf_psnr", psnr["test"], on_epoch=True)
-        self.log("test/nerf_ssim", ssim["test"], on_epoch=True)
-        self.log("test/nerf_lpips", lpips["test"], on_epoch=True)
+        self.log("test/nerf_psnr", psnrs["test"], on_epoch=True)
+        self.log("test/nerf_ssim", ssims["test"], on_epoch=True)
+        self.log("test/nerf_lpips", lpipses["test"], on_epoch=True)
+
+        # compression
+        self.log("test/psnr",       out['psnr-rgb'], on_epoch=True, sync_dist=True)
+        self.log("test/ms-ssim",    out['ms-ssim-rgb'], on_epoch=True, sync_dist=True)
+        self.log("test/bpp",        out['bpp'], on_epoch=True, sync_dist=True)
+        self.log("test/enc_time",   out['encoding_time'], on_epoch=True, sync_dist=True)
+        self.log("test/dec_time",   out['decoding_time'], on_epoch=True, sync_dist=True)
 
         if self.trainer.is_global_zero:
             image_dir = os.path.join(self.logdir, f"render_model_{random.randint(10, 99)}")
@@ -344,20 +318,6 @@ class MipNeRFTransformedLIC(LitModel):
 
             result_path = os.path.join(self.logdir, "results.json")
             self.write_stats(result_path, psnr, ssim, lpips)
-
-        # compression
-        H, W = xs.shape[-2:]
-        x_hats = self.alter_gather_cat(outputs, "x_hat", all_image_sizes)
-        strings = self.alter_gather_cat(outputs, "strings", all_image_sizes)
-        bpp_loss = (sum(len(s[0]) for s in strings) * 8.0 / (H * W)).mean()
-        mse_loss = helper.img2mse(x_hats, xs, None).mean()
-        lic_loss = (self.lmbda * 255 ** 2 * mse_loss + bpp_loss).mean()
-        psnr_mean = self.psnr_each(x_hats, xs).mean()
-        # ms_ssim_mean = self.ms_ssim_each(x_hats, xs).mean()
-        self.log("test/lic_psnr", psnr_mean.item(), on_epoch=True)
-        # self.log("test/lic_ms_ssim", ms_ssim_mean.item(), on_epoch=True)
-        self.log("test/lic_bpp", bpp_loss.item(), on_epoch=True)
-        self.log("test/lic_loss", lic_loss.item(), on_epoch=True)
 
         return psnr, ssim, lpips
 
@@ -443,54 +403,40 @@ class MipNeRFTransformedLIC(LitModel):
                 return x.permute(2, 0, 1)
         return x
 
-    def forward(self, x, rays, randomized, white_bkgd, near, far):
-        # B, C, H, W = x.shape
-
-        nerf_ret = self.forward_nerf(rays, randomized, white_bkgd, near, far) # density
-        xd = torch.stack(nerf_ret["density"], dim=0)
-        rgb = torch.stack(nerf_ret["rgb"], dim=0)
-        t_vals = torch.stack(nerf_ret["t_vals"], dim=0)
-
-        nerf_x = torch.cat([rgb, xd], dim=-1)
-        # KxBxNxC -> Nx(C*K)xHxW (HxW = B)
-        K, B, N, C = nerf_x.shape
-        nerf_x = self.nerf2img_shape(nerf_x)
-
+    def batch2img_shape(self, x, n_samples):
+        B, C = x.shape
         H = W = int(B ** (1/2))
-        C = x.shape[-1]
         x = x.permute(1, 0)
         x = x[None, :, :]
         x = x.reshape(-1, C, H, W)
-        x = x.repeat(N, *([1] * (len(x.shape) - 1)))
+        x = x.repeat(n_samples, *([1] * (len(x.shape) - 1)))
+        return x
 
-        x_cat = torch.cat([x, nerf_x], dim=1)
+    def forward(self, x, rays, randomized, white_bkgd, near, far):
+        
+        nerf_ret = self.forward_nerf(rays, randomized, white_bkgd, near, far) # density
+
+        density = torch.stack(nerf_ret["density"], dim=0)
+        rgb = torch.stack(nerf_ret["rgb"], dim=0)
+        x_density = torch.cat([rgb, density], dim=-1)
+
+        # KxBxNxC -> Nx(C*K)xHxW (HxW = B)
+        K, B, N, C = x_density.shape
+        x_density = self.nerf2img_shape(x_density)
+        x = self.batch2img_shape(x, N)
+
+        x_cat = torch.cat([x, x_density], dim=1)
         x_cat = x_cat.type(torch.FloatTensor).to(self.device)
 
         out = self.lic_model(x_cat)
         x_hat = out["x_hat"]
         likelihoods = out["likelihoods"]
-        x_rec = x_hat[:, :3, ...]
-        xd_rec = x_hat[:, 3:, ...]
-        # x_rec, xd_rec = x_hat.chunk(2, dim=1)
-
-        # Nx(C*K)xHxW (HxW = B) -> KxBxNxC
-        xd_rec = self.img2nerf_shape(xd_rec, K)
-        t_vals = self.img2nerf_shape(t_vals, K)
-
-        ret = []
-        for i in range(self.nerf_model.num_levels):
-            rgb = self.nerf_model.rgb_activation(rgb)
-            rgb = rgb * (1 + 2 * self.nerf_model.rgb_padding) - self.nerf_model.rgb_padding
-            comp_rgb, distance, acc, _ = helper.volumetric_rendering(
-                rgb[i], xd_rec, t_vals[i], rays["rays_d"], white_bkgd=white_bkgd
-            )
-            ret.append((comp_rgb, distance, acc))
 
         return {
             "x": x,
-            "x_hat": x_rec,
+            "x_hat": x_hat,
             "likelihoods": likelihoods,
-            "render": ret,
+            "render": nerf_ret["out"],
         }
 
     def forward_nerf(self, rays, randomized, white_bkgd, near, far):
@@ -498,6 +444,7 @@ class MipNeRFTransformedLIC(LitModel):
             "density": [],
             "rgb": [],
             "t_vals": [],
+            "out": [],
         }
         for i_level in range(self.nerf_model.num_levels):
             kwargs = {
@@ -545,9 +492,8 @@ class MipNeRFTransformedLIC(LitModel):
             comp_rgb, distance, acc, weights = helper.volumetric_rendering(
                 rgb, density, t_vals, rays["rays_d"], white_bkgd=white_bkgd
             )
-            """
-            ret.append((comp_rgb, distance, acc))
-            """
+
+            ret["out"].append((comp_rgb, distance, acc))
         return ret
 
     def render_rays(self, batch, batch_idx):

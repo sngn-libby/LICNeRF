@@ -214,37 +214,7 @@ def run(
         datadir = datadir,
     )
 
-    train_kwargs = {
-        "lmbda": lmbda,
-        "learning_rate": learning_rate,
-        "aux_learning_rate": aux_learning_rate,
-        "gamma": gamma,
 
-        "lr_init": lr_init,
-        "lr_final": lr_final,
-        "lr_delay_steps": lr_delay_steps,
-        "lr_delay_mult": lr_delay_mult,
-        "coarse_loss_mult": coarse_loss_mult,
-        "randomized": randomized,
-        "use_multiscale": use_multiscale,
-        "train_nerf": train_nerf,
-    }
-    nerf_kwargs = {
-        "num_samples":num_samples,
-        "num_levels":num_levels,
-        "resample_padding":resample_padding,
-        "stop_level_grad":stop_level_grad,
-        "use_viewdirs":use_viewdirs,
-        "lindisp":lindisp,
-        "ray_shape":ray_shape,
-        "min_deg_point":min_deg_point,
-        "max_deg_point":max_deg_point,
-        "deg_view":deg_view,
-        "density_noise":density_noise,
-        "density_bias":density_bias,
-        "rgb_padding":rgb_padding,
-        "disable_integration":disable_integration,
-    }
     model = select_research_model(
         research_model_name=research_model_name,
         lic_model_name=lic_model_name,
