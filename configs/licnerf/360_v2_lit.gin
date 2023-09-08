@@ -3,7 +3,25 @@
 run.dataset_name = "nerf_360_v2"
 run.datadir = "~/datasets/nerf_360_v2"
 run.logbase = "~/logs"
-run.ckpt_path = "~/checkpoints/mipnerf_nerf_360_v2_garden"
+#run.ckpt_path = "~/checkpoints/mipnerf_nerf_360_v2_garden"
+
+run.run_train = False
+run.run_eval = True
+run.run_test = True
+
+run.research_model_name = "transformed_lic"
+run.lic_model_name = "mbt2018"
+run.nerf_model_name = "mipnerf"
+run.quality = 4
+
+### Optimization
+run.max_steps = 1e6
+run.max_epochs = 250000
+run.precision = 32
+
+### Logging
+run.log_every_n_steps = 100
+run.progressbar_refresh_rate = 5
 
 ### Train configs
 MipNeRFTransformedLIC.lmbda             = 0.0130                                # !important
@@ -16,14 +34,12 @@ MipNeRFTransformedLIC.lr_delay_steps    = 2500
 MipNeRFTransformedLIC.lr_delay_mult     = 0.01
 MipNeRFTransformedLIC.coarse_loss_mult  = 0.1
 MipNeRFTransformedLIC.randomized        = True
-MipNeRFTransformedLIC.num_samples       = 64
 MipNeRFTransformedLIC.use_multiscale    = True
-MipNeRFTransformedLIC.num_levels        = 4 # multi-resolution levels (1 == no multi resolution)
 MipNeRFTransformedLIC.train_nerf        = False
 
-### NeRF configs
+### MipNeRF configs (including standard specific arguments)
 MipNeRF.num_samples                     = 128
-MipNeRF.num_levels                      = 2
+MipNeRF.num_levels                      = 4 # multi-resolution levels (1 == no multi resolution)
 MipNeRF.resample_padding			    = 0.01
 MipNeRF.stop_level_grad					= True
 MipNeRF.use_viewdirs					= True
@@ -32,24 +48,11 @@ MipNeRF.ray_shape					    = "cone"
 MipNeRF.min_deg_point					= 0
 MipNeRF.max_deg_point					= 16
 MipNeRF.deg_view					    = 4
-MipNeRF.density_noise					= 0
+MipNeRF.density_noise					= 1.
 MipNeRF.density_bias					= -1
 MipNeRF.rgb_padding						= 0.001
 MipNeRF.disable_integration				= False
 
-### Model configs
-run.research_model_name = "transformed_lic"
-run.lic_model_name = "mbt2018"
-run.nerf_model_name = "mipnerf"
-
-### Optimization
-run.max_steps = 1e6
-run.max_epochs = 250000
-run.precision = 32
-
-### Logging
-run.log_every_n_steps = 100
-run.progressbar_refresh_rate = 5
 
 ### LIC configs
 #LitJointAutoregressiveHierarchicalPriors.N=192
@@ -70,5 +73,4 @@ LitData.chunk = 8192
 LitData.use_pixel_centers = True
 LitData.epoch_size = 250000
 
-MipNeRF.density_noise = 1.
 LitDataNeRF360V2.cam_scale_factor = 0.125

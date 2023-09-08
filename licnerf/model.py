@@ -158,7 +158,7 @@ class MipNeRFTransformedLIC(LitModel):
             GDN(N, inverse=True),
             deconv(N, N, kernel_size=5, stride=2),
             GDN(N, inverse=True),
-            deconv(N, 4, kernel_size=5, stride=2),
+            deconv(N, 3, kernel_size=5, stride=2),
         )
 
         self.lic_model.h_s = nn.Sequential(
@@ -507,15 +507,19 @@ class MipNeRFTransformedLIC(LitModel):
         ret["rgb"] = rgb_fine
         return ret
 
-    def load_state_dict(self, state_dict, strict=True):
-        nerf_state_dict = dict()
-        for k, v in state_dict.items():
-            if 'model' in k:
-                k = k.replace('model.', '')
-                nerf_state_dict[k] = v
-        #
-        # for name, module in self.named_modules():
-        return self.nerf_model.load_state_dict(nerf_state_dict, strict)
-
+    # def load_state_dict(self, state_dict, strict=True):
+    #     lic_state_dict = dict()
+    #     nerf_state_dict = dict()
+    #     for k, v in state_dict.items():
+    #         if 'nerf_model' in k:
+    #             k = k.replace('nerf_model.', '')
+    #             nerf_state_dict[k] = v
+    #         if 'lic_model' in k:
+    #             k = k.replace('lic_model.', '')
+    #             lic_state_dict[k] = v
+    #     self.lic_model.load_state_dict(lic_state_dict, strict)
+    #     self.nerf_model.load_state_dict(nerf_state_dict, strict)
+    #     return super().load_state_dict(state_dict, strict)
+    #
 
 

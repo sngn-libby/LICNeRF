@@ -430,7 +430,6 @@ class MeanScaleHyperprior(ScaleHyperprior):
         return {"x_hat": x_hat}
 
 
-@gin.configurable()
 @register_model("mbt2018")
 class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
     r"""Joint Autoregressive Hierarchical Priors model from D.

@@ -85,41 +85,7 @@ def run(
         grad_clip_algorithm="norm",
         add_noise: float=0.0,
 
-        # train configs
-        lmbda=0.0130,
-        learning_rate=1e-4,
-        aux_learning_rate=1e-3,
-        gamma=0.8,
-
-        lr_init: float = 5.0e-4,
-        lr_final: float = 5.0e-6,
-        lr_delay_steps: int = 2500,
-        lr_delay_mult: float = 0.01,
-        coarse_loss_mult: float = 0.1,
-        randomized: bool = True,
-        use_multiscale: bool = False,
-
-        train_nerf: bool = True,
-
-        # LIC configs
-        N=192,
-        M=192,
-
-        # nerf configs
-        num_samples: int = 128,
-        num_levels: int = 2,
-        resample_padding: float = 0.01,
-        stop_level_grad: bool = True,
-        use_viewdirs: bool = True,
-        lindisp: bool = False,
-        ray_shape: str = "cone",
-        min_deg_point: int = 0,
-        max_deg_point: int = 16,
-        deg_view: int = 4,
-        density_noise: float = 0,
-        density_bias: float = -1,
-        rgb_padding: float = 0.001,
-        disable_integration: bool = False,
+        quality=4,
 ):
     print(f":: Log :: run parameters")
     for n, v in vars().items():
@@ -206,22 +172,19 @@ def run(
     if ckpt_path is not None:
         if ".ckpt" not in ckpt_path:
             ckpt_path = f"{ckpt_path}/last.ckpt"
-    print(f":: Log :: Provided checkpoints: {ckpt_path}")
+        print(f":: Log :: Provided checkpoints: {ckpt_path}")
 
     data_module = select_dataset(
-        dataset_name = dataset_name,
-        scene_name = scene_name,
-        datadir = datadir,
+        dataset_name=dataset_name,
+        scene_name=scene_name,
+        datadir=datadir,
     )
-
 
     model = select_research_model(
         research_model_name=research_model_name,
         lic_model_name=lic_model_name,
         nerf_model_name=nerf_model_name,
-        train_kwargs=train_kwargs,
-        lic_kwargs=lic_kwargs,
-        nerf_kwargs=nerf_kwargs,
+        quality=quality,
     )
     model.logdir = logdir
 

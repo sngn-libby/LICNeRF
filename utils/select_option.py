@@ -74,18 +74,17 @@ nerf_models = {
 
 def select_research_model(
         research_model_name: str,
-        lic_model_name: str,
-        nerf_model_name: str,
-        lic_kwargs: dict,
-        nerf_kwargs: dict,
+        lic_model_name: str = "mbt2018",
+        nerf_model_name: str = None,
+        quality=4,
         **kwargs
 ):
     assert research_model_name in research_models
-    assert lic_model_name in lic_models
+    assert lic_model_name in image_models
     assert nerf_model_name in base_nerf_models
 
-    nerf_model = base_nerf_models[nerf_model_name](**nerf_kwargs)
-    lic_model = lic_models[lic_model_name](**lic_kwargs)
+    nerf_model = base_nerf_models[nerf_model_name]()
+    lic_model = image_models[lic_model_name](quality=quality)
 
     return research_models[research_model_name](lic_model=lic_model,
                                                 nerf_model=nerf_model,
