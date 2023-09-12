@@ -27,7 +27,10 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import math
 import warnings
+import time
+from collections import defaultdict
 
 import torch
 import torch.nn as nn
@@ -36,21 +39,17 @@ import torch.nn.functional as F
 from compressai.ans import BufferedRansEncoder, RansDecoder
 from src.compressproj.entropy_models import EntropyBottleneck, GaussianConditional
 from src.compressproj.layers import GDN, MaskedConv2d
-from src.compressproj.registry import register_model
+from src.compressproj import env
 
-from .base import (
-    SCALES_LEVELS,
-    SCALES_MAX,
-    SCALES_MIN,
-    CompressionModel,
-    get_scale_table,
+from .utils import (
+    conv, deconv, update_registered_buffers,
+    depthwise_deconv,
+    distribution_counter, draw_distribution,
 )
-from .utils import conv, deconv
 
 __all__ = [
     "CompressionModel",
     "FactorizedPrior",
-    "FactorizedPriorReLU",
     "ScaleHyperprior",
     "MeanScaleHyperprior",
     "JointAutoregressiveHierarchicalPriors",
@@ -61,36 +60,74 @@ __all__ = [
 ]
 
 
-@register_model("bmshj2018-factorized")
+class CompressionModel(nn.Module):
+    """Base class for constructing an auto-encoder with at least one entropy
+    bottleneck module.
+
+    Args:
+        entropy_bottleneck_channels (int): Number of channels of the entropy
+            bottleneck
+    """
+
+    def __init__(self, entropy_bottleneck_channels, init_weights=None):
+        super().__init__()
+        self.entropy_bottleneck = EntropyBottleneck(entropy_bottleneck_channels)
+
+        if init_weights is not None:
+            warnings.warn(
+                "init_weights was removed as it was never functional",
+                DeprecationWarning,
+            )
+
+    def aux_loss(self):
+        """Return the aggregated loss over the auxiliary entropy bottleneck
+        module(s).
+        """
+        aux_loss = sum(
+            m.loss() for m in self.modules() if isinstance(m, EntropyBottleneck)
+        )
+        return aux_loss
+
+    def forward(self, *args):
+        raise NotImplementedError()
+
+    def update(self, force=False):
+        """Updates the entropy bottleneck(s) CDF values.
+
+        Needs to be called once after training to be able to later perform the
+        evaluation with an actual entropy coder.
+
+        Args:
+            force (bool): overwrite previous values (default: False)
+
+        Returns:
+            updated (bool): True if one of the EntropyBottlenecks was updated.
+
+        """
+        updated = False
+        for m in self.children():
+            if not isinstance(m, EntropyBottleneck):
+                continue
+            rv = m.update(force=force)
+            updated |= rv
+        return updated
+
+    def load_state_dict(self, state_dict):
+        # Dynamically update the entropy bottleneck buffers related to the CDFs
+        update_registered_buffers(
+            self.entropy_bottleneck,
+            "entropy_bottleneck",
+            ["_quantized_cdf", "_offset", "_cdf_length"],
+            state_dict,
+        )
+        super().load_state_dict(state_dict)
+
+
 class FactorizedPrior(CompressionModel):
     r"""Factorized Prior model from J. Balle, D. Minnen, S. Singh, S.J. Hwang,
     N. Johnston: `"Variational Image Compression with a Scale Hyperprior"
     <https://arxiv.org/abs/1802.01436>`_, Int Conf. on Learning Representations
     (ICLR), 2018.
-
-    .. code-block:: none
-
-                  ┌───┐    y
-            x ──►─┤g_a├──►─┐
-                  └───┘    │
-                           ▼
-                         ┌─┴─┐
-                         │ Q │
-                         └─┬─┘
-                           │
-                     y_hat ▼
-                           │
-                           ·
-                        EB :
-                           ·
-                           │
-                     y_hat ▼
-                           │
-                  ┌───┐    │
-        x_hat ──◄─┤g_s├────┘
-                  └───┘
-
-        EB = Entropy bottleneck
 
     Args:
         N (int): Number of channels
@@ -99,9 +136,7 @@ class FactorizedPrior(CompressionModel):
     """
 
     def __init__(self, N, M, **kwargs):
-        super().__init__(**kwargs)
-
-        self.entropy_bottleneck = EntropyBottleneck(M)
+        super().__init__(entropy_bottleneck_channels=M, **kwargs)
 
         self.g_a = nn.Sequential(
             conv(3, N),
@@ -163,76 +198,22 @@ class FactorizedPrior(CompressionModel):
         return {"x_hat": x_hat}
 
 
-@register_model("bmshj2018-factorized-relu")
-class FactorizedPriorReLU(FactorizedPrior):
-    r"""Factorized Prior model from J. Balle, D. Minnen, S. Singh, S.J. Hwang,
-    N. Johnston: `"Variational Image Compression with a Scale Hyperprior"
-    <https://arxiv.org/abs/1802.01436>`_, Int Conf. on Learning Representations
-    (ICLR), 2018.
-    GDN activations are replaced by ReLU.
-
-    Args:
-        N (int): Number of channels
-        M (int): Number of channels in the expansion layers (last layer of the
-            encoder and last layer of the hyperprior decoder)
-    """
-
-    def __init__(self, N, M, **kwargs):
-        super().__init__(N=N, M=M, **kwargs)
-
-        self.g_a = nn.Sequential(
-            conv(3, N),
-            nn.ReLU(inplace=True),
-            conv(N, N),
-            nn.ReLU(inplace=True),
-            conv(N, N),
-            nn.ReLU(inplace=True),
-            conv(N, M),
-        )
-
-        self.g_s = nn.Sequential(
-            deconv(M, N),
-            nn.ReLU(inplace=True),
-            deconv(N, N),
-            nn.ReLU(inplace=True),
-            deconv(N, N),
-            nn.ReLU(inplace=True),
-            deconv(N, 3),
-        )
+# From Balle's tensorflow compression examples
+SCALES_MIN = 0.11
+SCALES_MAX = 256
+SCALES_LEVELS = 64
 
 
-@register_model("bmshj2018-hyperprior")
+def get_scale_table(min=SCALES_MIN, max=SCALES_MAX, levels=SCALES_LEVELS):
+    return torch.exp(torch.linspace(math.log(min), math.log(max), levels))
+
+
 class ScaleHyperprior(CompressionModel):
     r"""Scale Hyperprior model from J. Balle, D. Minnen, S. Singh, S.J. Hwang,
     N. Johnston: `"Variational Image Compression with a Scale Hyperprior"
     <https://arxiv.org/abs/1802.01436>`_ Int. Conf. on Learning Representations
     (ICLR), 2018.
 
-    .. code-block:: none
-
-                  ┌───┐    y     ┌───┐  z  ┌───┐ z_hat      z_hat ┌───┐
-            x ──►─┤g_a├──►─┬──►──┤h_a├──►──┤ Q ├───►───·⋯⋯·───►───┤h_s├─┐
-                  └───┘    │     └───┘     └───┘        EB        └───┘ │
-                           ▼                                            │
-                         ┌─┴─┐                                          │
-                         │ Q │                                          ▼
-                         └─┬─┘                                          │
-                           │                                            │
-                     y_hat ▼                                            │
-                           │                                            │
-                           ·                                            │
-                        GC : ◄─────────────────────◄────────────────────┘
-                           ·                 scales_hat
-                           │
-                     y_hat ▼
-                           │
-                  ┌───┐    │
-        x_hat ──◄─┤g_s├────┘
-                  └───┘
-
-        EB = Entropy bottleneck
-        GC = Gaussian conditional
-
     Args:
         N (int): Number of channels
         M (int): Number of channels in the expansion layers (last layer of the
@@ -240,9 +221,8 @@ class ScaleHyperprior(CompressionModel):
     """
 
     def __init__(self, N, M, **kwargs):
-        super().__init__(**kwargs)
-
-        self.entropy_bottleneck = EntropyBottleneck(N)
+        print(f":: Model :: ScaleHyperprior")
+        super().__init__(entropy_bottleneck_channels=N, **kwargs)
 
         self.g_a = nn.Sequential(
             conv(3, N),
@@ -302,6 +282,15 @@ class ScaleHyperprior(CompressionModel):
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
         }
 
+    def load_state_dict(self, state_dict):
+        update_registered_buffers(
+            self.gaussian_conditional,
+            "gaussian_conditional",
+            ["_quantized_cdf", "_offset", "_cdf_length", "scale_table"],
+            state_dict,
+        )
+        super().load_state_dict(state_dict)
+
     @classmethod
     def from_state_dict(cls, state_dict):
         """Return a new model instance from `state_dict`."""
@@ -311,59 +300,67 @@ class ScaleHyperprior(CompressionModel):
         net.load_state_dict(state_dict)
         return net
 
+    def update(self, scale_table=None, force=False):
+        if scale_table is None:
+            scale_table = get_scale_table()
+        updated = self.gaussian_conditional.update_scale_table(scale_table, force=force)
+        updated |= super().update(force=force)
+        return updated
+
     def compress(self, x):
+        start_time = time.process_time()
         y = self.g_a(x)
         z = self.h_a(torch.abs(y))
 
         z_strings = self.entropy_bottleneck.compress(z)
         z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
 
+        start_log_time = time.process_time()
         scales_hat = self.h_s(z_hat)
+        end_log_time = time.process_time()
+
         indexes = self.gaussian_conditional.build_indexes(scales_hat)
         y_strings = self.gaussian_conditional.compress(y, indexes)
-        return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
+
+        end_time = time.process_time()
+        cost_time = end_time - start_time
+        tar_cost_time = end_log_time - start_log_time
+
+        return {
+            "strings": [y_strings, z_strings],
+            "shape": z.size()[-2:],
+            "cost_time": cost_time,
+            "tar_cost_time": tar_cost_time,
+        }
 
     def decompress(self, strings, shape):
         assert isinstance(strings, list) and len(strings) == 2
+        start_time = time.process_time()
         z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
+
+        start_log_time = time.process_time()
         scales_hat = self.h_s(z_hat)
+        end_log_time = time.process_time()
+
         indexes = self.gaussian_conditional.build_indexes(scales_hat)
         y_hat = self.gaussian_conditional.decompress(strings[0], indexes, z_hat.dtype)
         x_hat = self.g_s(y_hat).clamp_(0, 1)
-        return {"x_hat": x_hat}
+        end_time = time.process_time()
+
+        cost_time = end_time - start_time
+        tar_cost_time = end_log_time - start_log_time
+        return {
+            "x_hat": x_hat,
+            "cost_time": cost_time,
+            "tar_cost_time": tar_cost_time,
+        }
 
 
-@register_model("mbt2018-mean")
 class MeanScaleHyperprior(ScaleHyperprior):
     r"""Scale Hyperprior with non zero-mean Gaussian conditionals from D.
     Minnen, J. Balle, G.D. Toderici: `"Joint Autoregressive and Hierarchical
     Priors for Learned Image Compression" <https://arxiv.org/abs/1809.02736>`_,
     Adv. in Neural Information Processing Systems 31 (NeurIPS 2018).
-
-    .. code-block:: none
-
-                  ┌───┐    y     ┌───┐  z  ┌───┐ z_hat      z_hat ┌───┐
-            x ──►─┤g_a├──►─┬──►──┤h_a├──►──┤ Q ├───►───·⋯⋯·───►───┤h_s├─┐
-                  └───┘    │     └───┘     └───┘        EB        └───┘ │
-                           ▼                                            │
-                         ┌─┴─┐                                          │
-                         │ Q │                                          ▼
-                         └─┬─┘                                          │
-                           │                                            │
-                     y_hat ▼                                            │
-                           │                                            │
-                           ·                                            │
-                        GC : ◄─────────────────────◄────────────────────┘
-                           ·                 scales_hat
-                           │                 means_hat
-                     y_hat ▼
-                           │
-                  ┌───┐    │
-        x_hat ──◄─┤g_s├────┘
-                  └───┘
-
-        EB = Entropy bottleneck
-        GC = Gaussian conditional
 
     Args:
         N (int): Number of channels
@@ -372,7 +369,8 @@ class MeanScaleHyperprior(ScaleHyperprior):
     """
 
     def __init__(self, N, M, **kwargs):
-        super().__init__(N=N, M=M, **kwargs)
+        print(f":: Model :: MeanScaleHyperprior")
+        super().__init__(N, M, **kwargs)
 
         self.h_a = nn.Sequential(
             conv(M, N, stride=1, kernel_size=3),
@@ -430,41 +428,19 @@ class MeanScaleHyperprior(ScaleHyperprior):
         return {"x_hat": x_hat}
 
 
-@register_model("mbt2018")
-class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
+exp_on = True
+# exp_on = False
+
+import numpy as np
+scale_counter = np.ndarray((192,), dtype=defaultdict)
+mean_counter = np.ndarray((192,), dtype=defaultdict)
+
+
+class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior): # Minnen 2018
     r"""Joint Autoregressive Hierarchical Priors model from D.
     Minnen, J. Balle, G.D. Toderici: `"Joint Autoregressive and Hierarchical
     Priors for Learned Image Compression" <https://arxiv.org/abs/1809.02736>`_,
     Adv. in Neural Information Processing Systems 31 (NeurIPS 2018).
-
-    .. code-block:: none
-
-                  ┌───┐    y     ┌───┐  z  ┌───┐ z_hat      z_hat ┌───┐
-            x ──►─┤g_a├──►─┬──►──┤h_a├──►──┤ Q ├───►───·⋯⋯·───►───┤h_s├─┐
-                  └───┘    │     └───┘     └───┘        EB        └───┘ │
-                           ▼                                            │
-                         ┌─┴─┐                                          │
-                         │ Q │                                   params ▼
-                         └─┬─┘                                          │
-                     y_hat ▼                  ┌─────┐                   │
-                           ├──────────►───────┤  CP ├────────►──────────┤
-                           │                  └─────┘                   │
-                           ▼                                            ▼
-                           │                                            │
-                           ·                  ┌─────┐                   │
-                        GC : ◄────────◄───────┤  EP ├────────◄──────────┘
-                           ·     scales_hat   └─────┘
-                           │      means_hat
-                     y_hat ▼
-                           │
-                  ┌───┐    │
-        x_hat ──◄─┤g_s├────┘
-                  └───┘
-
-        EB = Entropy bottleneck
-        GC = Gaussian conditional
-        EP = Entropy parameters network
-        CP = Context prediction (masked convolution)
 
     Args:
         N (int): Number of channels
@@ -473,6 +449,7 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
     """
 
     def __init__(self, N=192, M=192, **kwargs):
+        print(":: Model :: JointAutoregressiveHierarchicalPriors (mbt2018)")
         super().__init__(N=N, M=M, **kwargs)
 
         self.g_a = nn.Sequential(
@@ -527,6 +504,24 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         self.N = int(N)
         self.M = int(M)
 
+        if exp_on:
+            self.h_a = nn.Sequential(
+                conv(M, N, stride=1, kernel_size=1),
+                nn.LeakyReLU(inplace=True),
+                conv(N, N, stride=1, kernel_size=1),
+                nn.LeakyReLU(inplace=True),
+                conv(N, N, stride=1, kernel_size=2),
+            )
+            self.h_s = nn.Sequential(
+                deconv(N, M, stride=1, kernel_size=2),
+                nn.LeakyReLU(inplace=True),
+                deconv(M, M * 3 // 2, stride=1, kernel_size=1),
+                nn.LeakyReLU(inplace=True),
+                conv(M * 3 // 2, M * 2, stride=1, kernel_size=1),
+            )
+            self.context_prediction = MaskedConv2d(
+                M, 2 * M, kernel_size=3, padding=1, stride=1
+            )
 
 
     @property
@@ -542,6 +537,7 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         y_hat = self.gaussian_conditional.quantize(
             y, "noise" if self.training else "dequantize"
         )
+
         ctx_params = self.context_prediction(y_hat)
         gaussian_params = self.entropy_parameters(
             torch.cat((params, ctx_params), dim=1)
@@ -549,6 +545,35 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         scales_hat, means_hat = gaussian_params.chunk(2, 1)
         _, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
         x_hat = self.g_s(y_hat)
+
+        # z_hat = torch.round(z_hat.permute(1, 0, 2, 3))
+        # means_hat = means_hat.permute(1, 0, 2, 3)
+        # scales_hat = scales_hat.permute(1, 0, 2, 3)
+        # for c in range(len(z_hat)):
+        #     counter = distribution_counter(defaultdict(int), z_hat[c].reshape(-1), precision=0)
+        #     draw_distribution(counter, title=f"Minnen2018 z_hat Distribution (c:{c})", precision=0)
+
+        # z_hat = z_hat.repeat(1, 1, 4, 4)
+
+        # means_hat = means_hat[torch.round(z_hat) == 0]
+        # scales_hat = scales_hat[torch.round(z_hat) == 0]
+
+        # global scale_counter
+        # global mean_counter
+
+        # C, B, H, W = z_hat.shape
+        # z_hat_rf = torch.ones_like(z_hat)
+        # z_hat_rf[:, :, :H-1, :W-1] *= z_hat[:, :, :H-1, :W-1]
+        # z_hat_rf[:, :, :H-1, 1:W] *= z_hat[:, :, :H-1, 1:W]
+        # z_hat_rf[:, :, 1:H, :W-1] *= z_hat[:, :, 1:H, :W-1]
+        # z_hat_rf[:, :, 1:H, 1:W] *= z_hat[:, :, 1:H, 1:W]
+
+        # print(len(means_hat), means_hat.shape, (z_hat[0] == 0).shape,  (z_hat[0] == 0).flatten()[0])
+        # for c in range(len(means_hat)):
+        #     scale_counter[c] = distribution_counter(scale_counter[c], scales_hat[c][z_hat_rf[c] == 27].reshape(-1))
+        #     mean_counter[c] = distribution_counter(mean_counter[c], means_hat[c][z_hat_rf[c] == 27].reshape(-1))
+        #     draw_distribution(mean_counter[c], title=f"Minnen2018 Mean Distribution (c:{c} (1, 1, 1, 1))")
+        #     draw_distribution(scale_counter[c], title=f"Minnen2018 Scale Distribution (c:{c} (1, 1, 1, 1))")
 
         return {
             "x_hat": x_hat,
@@ -568,9 +593,10 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         if next(self.parameters()).device != torch.device("cpu"):
             warnings.warn(
                 "Inference on GPU is not recommended for the autoregressive "
-                "models (the entropy coder is run sequentially on CPU).",
-                stacklevel=2,
+                "models (the entropy coder is run sequentially on CPU)."
             )
+
+        start_time = time.process_time()
 
         y = self.g_a(x)
         z = self.h_a(y)
@@ -578,6 +604,7 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         z_strings = self.entropy_bottleneck.compress(z)
         z_hat = self.entropy_bottleneck.decompress(z_strings, z.size()[-2:])
 
+        start_log_time = time.process_time()
         params = self.h_s(z_hat)
 
         s = 4  # scaling factor between z and y
@@ -587,20 +614,38 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         y_height = z_hat.size(2) * s
         y_width = z_hat.size(3) * s
 
+        if exp_on:
+            s = 1
+            kernel_size = 3
+            padding = (kernel_size - 1) // 2
+
+            y_height = z_hat.size(2) * s - 1
+            y_width = z_hat.size(3) * s - 1
+
         y_hat = F.pad(y, (padding, padding, padding, padding))
 
         y_strings = []
+        tot_tar_cost_time = time.process_time() - start_log_time
         for i in range(y.size(0)):
-            string = self._compress_ar(
+            string, tar_cost_time = self._compress_ar(
                 y_hat[i : i + 1],
                 params[i : i + 1],
+                y_height,
                 y_width,
                 kernel_size,
                 padding,
             )
             y_strings.append(string)
+            tot_tar_cost_time += tar_cost_time
 
-        return {"strings": [y_strings, z_strings], "shape": z.size()[-2:]}
+        end_time = time.process_time()
+
+        return {
+            "strings": [y_strings, z_strings],
+            "shape": z.size()[-2:],
+            "cost_time": end_time - start_time,
+            "tar_cost_time": tot_tar_cost_time,
+        }
 
     def _compress_ar(self, y_hat, params, height, width, kernel_size, padding):
         cdf = self.gaussian_conditional.quantized_cdf.tolist()
@@ -611,16 +656,20 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         symbols_list = []
         indexes_list = []
 
+        tar_cost_time = 0
+
         # Warning, this is slow...
         # TODO: profile the calls to the bindings...
         masked_weight = self.context_prediction.weight * self.context_prediction.mask
         for h in range(height):
             for w in range(width):
+                start_log_time = time.process_time()
                 y_crop = y_hat[:, :, h : h + kernel_size, w : w + kernel_size]
                 ctx_p = F.conv2d(
                     y_crop,
                     masked_weight,
                     bias=self.context_prediction.bias,
+                    groups=self.context_prediction.groups,
                 )
 
                 # 1x1 conv for the entropy parameters prediction network, so
@@ -629,9 +678,10 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
                 gaussian_params = self.entropy_parameters(torch.cat((p, ctx_p), dim=1))
                 gaussian_params = gaussian_params.squeeze(3).squeeze(2)
                 scales_hat, means_hat = gaussian_params.chunk(2, 1)
+                end_log_time = time.process_time()
+                tar_cost_time += end_log_time - start_log_time
 
                 indexes = self.gaussian_conditional.build_indexes(scales_hat)
-
                 y_crop = y_crop[:, :, padding, padding]
                 y_q = self.gaussian_conditional.quantize(y_crop, "symbols", means_hat)
                 y_hat[:, :, h + padding, w + padding] = y_q + means_hat
@@ -639,12 +689,13 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
                 symbols_list.extend(y_q.squeeze().tolist())
                 indexes_list.extend(indexes.squeeze().tolist())
 
+        # print(np.array(symbols_list).shape, np.array(indexes_list).shape, np.array(cdf).shape, np.array(cdf_lengths).shape, np.array(offsets).shape)
         encoder.encode_with_indexes(
             symbols_list, indexes_list, cdf, cdf_lengths, offsets
         )
 
         string = encoder.flush()
-        return string
+        return string, tar_cost_time
 
     def decompress(self, strings, shape):
         assert isinstance(strings, list) and len(strings) == 2
@@ -652,14 +703,16 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         if next(self.parameters()).device != torch.device("cpu"):
             warnings.warn(
                 "Inference on GPU is not recommended for the autoregressive "
-                "models (the entropy coder is run sequentially on CPU).",
-                stacklevel=2,
+                "models (the entropy coder is run sequentially on CPU)."
             )
 
         # FIXME: we don't respect the default entropy coder and directly call the
         # range ANS decoder
 
+        start_time = time.process_time()
+
         z_hat = self.entropy_bottleneck.decompress(strings[1], shape)
+        start_log_time = time.process_time()
         params = self.h_s(z_hat)
 
         s = 4  # scaling factor between z and y
@@ -669,6 +722,14 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         y_height = z_hat.size(2) * s
         y_width = z_hat.size(3) * s
 
+        if exp_on:
+            s = 1
+            kernel_size = 3
+            padding = (kernel_size - 1) // 2
+
+            y_height = z_hat.size(2) * s - 1
+            y_width = z_hat.size(3) * s - 1
+
         # initialize y_hat to zeros, and pad it so we can directly work with
         # sub-tensors of size (N, C, kernel size, kernel_size)
         y_hat = torch.zeros(
@@ -676,8 +737,9 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
             device=z_hat.device,
         )
 
+        tot_tar_cost_time = time.process_time() - start_log_time
         for i, y_string in enumerate(strings[0]):
-            self._decompress_ar(
+            tar_cost_time = self._decompress_ar(
                 y_string,
                 y_hat[i : i + 1],
                 params[i : i + 1],
@@ -686,10 +748,19 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
                 kernel_size,
                 padding,
             )
+            tot_tar_cost_time += tar_cost_time
 
         y_hat = F.pad(y_hat, (-padding, -padding, -padding, -padding))
         x_hat = self.g_s(y_hat).clamp_(0, 1)
-        return {"x_hat": x_hat}
+
+        end_time = time.process_time()
+        cost_time = end_time - start_time
+
+        return {
+            "x_hat": x_hat,
+            "cost_time": cost_time,
+            "tar_cost_time": tar_cost_time,
+        }
 
     def _decompress_ar(
         self, y_string, y_hat, params, height, width, kernel_size, padding
@@ -698,27 +769,34 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
         cdf_lengths = self.gaussian_conditional.cdf_length.tolist()
         offsets = self.gaussian_conditional.offset.tolist()
 
+        print("Dec]", np.array(y_string).shape, np.array(cdf).shape, np.array(cdf_lengths).shape, np.array(offsets).shape)
+
         decoder = RansDecoder()
         decoder.set_stream(y_string)
 
         # Warning: this is slow due to the auto-regressive nature of the
         # decoding... See more recent publication where they use an
         # auto-regressive module on chunks of channels for faster decoding...
+        tar_cost_time = 0
         for h in range(height):
             for w in range(width):
                 # only perform the 5x5 convolution on a cropped tensor
                 # centered in (h, w)
+                start_log_time = time.process_time()
                 y_crop = y_hat[:, :, h : h + kernel_size, w : w + kernel_size]
                 ctx_p = F.conv2d(
                     y_crop,
                     self.context_prediction.weight,
                     bias=self.context_prediction.bias,
+                    groups=self.context_prediction.groups,
                 )
                 # 1x1 conv for the entropy parameters prediction network, so
                 # we only keep the elements in the "center"
                 p = params[:, :, h : h + 1, w : w + 1]
                 gaussian_params = self.entropy_parameters(torch.cat((p, ctx_p), dim=1))
                 scales_hat, means_hat = gaussian_params.chunk(2, 1)
+                end_log_time = time.process_time()
+                tar_cost_time += end_log_time - start_log_time
 
                 indexes = self.gaussian_conditional.build_indexes(scales_hat)
                 rv = decoder.decode_stream(
@@ -730,3 +808,5 @@ class JointAutoregressiveHierarchicalPriors(MeanScaleHyperprior):
                 hp = h + padding
                 wp = w + padding
                 y_hat[:, :, hp : hp + 1, wp : wp + 1] = rv
+
+        return tar_cost_time

@@ -182,7 +182,7 @@ class EntropyModel(nn.Module):
     def _quantize(
         self, inputs: Tensor, mode: str, means: Optional[Tensor] = None
     ) -> Tensor:
-        warnings.warn("_quantize is deprecated. Use quantize instead.", stacklevel=2)
+        warnings.warn("_quantize is deprecated. Use quantize instead.")
         return self.quantize(inputs, mode, means)
 
     @staticmethod
@@ -198,7 +198,7 @@ class EntropyModel(nn.Module):
 
     @classmethod
     def _dequantize(cls, inputs: Tensor, means: Optional[Tensor] = None) -> Tensor:
-        warnings.warn("_dequantize. Use dequantize instead.", stacklevel=2)
+        warnings.warn("_dequantize. Use dequantize instead.")
         return cls.dequantize(inputs, means)
 
     def _pmf_to_cdf(self, pmf, tail_mass, pmf_length, max_length):
@@ -241,7 +241,8 @@ class EntropyModel(nn.Module):
             indexes (torch.IntTensor): tensors CDF indexes
             means (torch.Tensor, optional): optional tensor means
         """
-        symbols = self.quantize(inputs, "symbols", means)
+        symbols = self.quantize(inputs, "symbols", means) # z_hat
+        # print(symbols[symbols < 0])
 
         if len(inputs.size()) < 2:
             raise ValueError(
@@ -321,8 +322,56 @@ class EntropyModel(nn.Module):
             outputs[i] = torch.tensor(
                 values, device=outputs.device, dtype=outputs.dtype
             ).reshape(outputs[i].size())
-        outputs = self.dequantize(outputs, means, dtype)
+        # print("dequantize]\n", outputs[0][56], "\n", torch.min(outputs).item(), torch.max(outputs).item(), means)
+        outputs = self.dequantize(outputs, means, dtype) # (1, 192, 48, 32) z_hat
         return outputs
+
+    def decompress_lut(self, strings: str,
+                       indexes: torch.IntTensor,
+                       dtype: torch.dtype = torch.float,
+                       means: torch.Tensor = None,):
+        if not isinstance(strings, (tuple, list)):
+            raise ValueError("Invalid `strings` parameter type.")
+
+        if not len(strings) == indexes.size(0):
+            raise ValueError("Invalid strings or indexes parameters")
+
+        if len(indexes.size()) < 2:
+            raise ValueError(
+                "Invalid `indexes` size. Expected a tensor with at least 2 dimensions."
+            )
+
+        self._check_cdf_size()
+        self._check_cdf_length()
+        self._check_offsets_size()
+
+        if means is not None:
+            if means.size()[:2] != indexes.size()[:2]:
+                raise ValueError("Invalid means or indexes parameters")
+            if means.size() != indexes.size():
+                for i in range(2, len(indexes.size())):
+                    if means.size(i) != 1:
+                        raise ValueError("Invalid means parameters")
+
+        cdf = self._quantized_cdf
+        outputs = cdf.new_empty(indexes.size())
+
+        for i, s in enumerate(strings):
+            values = self.entropy_coder.decode_with_indexes(
+                s,
+                indexes[i].reshape(-1).int().tolist(),
+                cdf.tolist(),
+                self._cdf_length.reshape(-1).int().tolist(),
+                self._offset.reshape(-1).int().tolist(),
+            )
+            outputs[i] = torch.tensor(
+                values, device=outputs.device, dtype=outputs.dtype
+            ).reshape(outputs[i].size())
+        outputs_deq = self.dequantize(outputs, means, dtype) # (1, 192, 48, 32) z_hat
+        return {
+            "output_hat": outputs,
+            "output": outputs_deq,
+        }
 
 
 class EntropyBottleneck(EntropyModel):
@@ -333,7 +382,7 @@ class EntropyBottleneck(EntropyModel):
     This is a re-implementation of the entropy bottleneck layer in
     *tensorflow/compression*. See the original paper and the `tensorflow
     documentation
-    <https://github.com/tensorflow/compression/blob/v1.3/docs/entropy_bottleneck.md>`__
+    <https://tensorflow.github.io/compression/docs/entropy_bottleneck.html>`__
     for an introduction.
     """
 
@@ -386,6 +435,37 @@ class EntropyBottleneck(EntropyModel):
         medians = self.quantiles[:, :, 1:2]
         return medians
 
+    def get_pmf_start(self) -> Tensor:
+        minima = self.get_minima()
+        median = self.get_median()
+        pmf_start = median - minima
+        return pmf_start
+
+    def get_pmf_length(self) -> Tensor:
+        maxima = self.get_maxima()
+        minima = self.get_minima()
+        return maxima + minima + 1
+
+    def get_minima(self):
+        medians = self.get_median()
+        minima = medians - self.quantiles[:, 0, 0]
+        minima = torch.ceil(minima).int()
+        minima = torch.clamp(minima, min=0)
+        return minima
+
+    def get_maxima(self):
+        medians = self.get_median()
+        maxima = self.quantiles[:, 0, 2] - medians
+        maxima = torch.ceil(maxima).int()
+        maxima = torch.clamp(maxima, min=0)
+        return maxima
+
+    def get_median(self) -> Tensor:
+        return self.quantiles[:, 0, 1]
+
+    def get_quantiles(self):
+        return self.quantiles
+
     def update(self, force: bool = False) -> bool:
         # Check if we need to update the bottleneck parameters, the offsets are
         # only computed and stored when the conditonal model is update()'d.
@@ -404,15 +484,22 @@ class EntropyBottleneck(EntropyModel):
 
         self._offset = -minima
 
-        pmf_start = medians - minima
+        pmf_start = medians - minima # (192)
         pmf_length = maxima + minima + 1
 
         max_length = pmf_length.max().item()
         device = pmf_start.device
-        samples = torch.arange(max_length, device=device)
-        samples = samples[None, :] + pmf_start[:, None, None]
+        samples = torch.arange(max_length, device=device) # (21)
 
-        pmf, lower, upper = self._likelihood(samples, stop_gradient=True)
+        samples = samples[None, :] + pmf_start[:, None, None] # (192, 1, 21)
+
+        half = float(0.5)
+
+        lower = self._logits_cumulative(samples - half, stop_gradient=True)
+        upper = self._logits_cumulative(samples + half, stop_gradient=True)
+        sign = -torch.sign(lower + upper)
+        pmf = torch.abs(torch.sigmoid(sign * upper) - torch.sigmoid(sign * lower))
+
         pmf = pmf[:, 0, :]
         tail_mass = torch.sigmoid(lower[:, 0, :1]) + torch.sigmoid(-upper[:, 0, -1:])
 
@@ -426,8 +513,19 @@ class EntropyBottleneck(EntropyModel):
         loss = torch.abs(logits - self.target).sum()
         return loss
 
+    def get_quantized_cdf(self):
+        return self._quantized_cdf
+
+    def get_cdf_logits(self, inputs: Tensor):
+        cdf = torch.sigmoid(self._logits_cumulative(inputs, stop_gradient=True))
+        return cdf
+
+    def get_pmf_probs(self, inputs: Tensor):
+        return self._likelihood(inputs)
+
     def _logits_cumulative(self, inputs: Tensor, stop_gradient: bool) -> Tensor:
         # TorchScript not yet working (nn.Mmodule indexing not supported)
+        # print("_logits_cumulative inputs[0]:", inputs[118], inputs.min().item(), torch.argmin(inputs))
         logits = inputs
         for i in range(len(self.filters) + 1):
             matrix = getattr(self, f"_matrix{i:d}")
@@ -445,17 +543,28 @@ class EntropyBottleneck(EntropyModel):
                 if stop_gradient:
                     factor = factor.detach()
                 logits += torch.tanh(factor) * torch.tanh(logits)
+
+        # output = torch.sigmoid(logits)
+        # print("_logits_cumulative output[0]:", output[118], output.min().item(), output.max().item())
         return logits
 
     @torch.jit.unused
-    def _likelihood(
-        self, inputs: Tensor, stop_gradient: bool = False
-    ) -> Tuple[Tensor, Tensor, Tensor]:
+    def _likelihood(self, inputs: Tensor) -> Tensor:
         half = float(0.5)
-        lower = self._logits_cumulative(inputs - half, stop_gradient=stop_gradient)
-        upper = self._logits_cumulative(inputs + half, stop_gradient=stop_gradient)
-        likelihood = torch.sigmoid(upper) - torch.sigmoid(lower)
-        return likelihood, lower, upper
+        v0 = inputs - half
+        v1 = inputs + half
+        lower = self._logits_cumulative(v0, stop_gradient=False)
+        upper = self._logits_cumulative(v1, stop_gradient=False)
+        sign = -torch.sign(lower + upper)
+        sign = sign.detach()
+        likelihood = torch.abs(
+            torch.sigmoid(sign * upper) - torch.sigmoid(sign * lower)
+        )
+        # print(inputs[0, :, :].max(), likelihood.shape, likelihood.min(), likelihood.max())
+        # print("_likelihood inputs[0]:", inputs[0], "\n",
+        #       "outputs[0]:", likelihood[0])
+        return likelihood
+
 
     def forward(
         self, x: Tensor, training: Optional[bool] = None
@@ -481,13 +590,12 @@ class EntropyBottleneck(EntropyModel):
         values = x.reshape(x.size(0), 1, -1)
 
         # Add noise or quantize
-
         outputs = self.quantize(
             values, "noise" if training else "dequantize", self._get_medians()
         )
 
         if not torch.jit.is_scripting():
-            likelihood, _, _ = self._likelihood(outputs)
+            likelihood = self._likelihood(outputs)
             if self.use_likelihood_bound:
                 likelihood = self.likelihood_lower_bound(likelihood)
         else:
@@ -506,6 +614,7 @@ class EntropyBottleneck(EntropyModel):
 
     @staticmethod
     def _build_indexes(size):
+        # C개의 channel에 [0, C) 의 인덱싱하기
         dims = len(size)
         N = size[0]
         C = size[1]
@@ -536,6 +645,24 @@ class EntropyBottleneck(EntropyModel):
         medians = medians.expand(len(strings), *([-1] * (len(size) + 1)))
         return super().decompress(strings, indexes, medians.dtype, medians)
 
+    def decompress_lut(self, strings, size):
+        # len(strings) == 16
+        output_size = (len(strings), self._quantized_cdf.size(0), *size)
+        indexes = self._build_indexes(output_size).to(self._quantized_cdf.device)
+        medians = self._extend_ndims(self._get_medians().detach(), len(size))
+        medians = medians.expand(len(strings), *([-1] * (len(size) + 1)))
+        output = super().decompress_lut(strings, indexes)["output"]
+        output_deq = self.dequantize(output, medians, medians.dtype) # (1, 192, 48, 32) z_hat
+        return {
+            "output_hat": output,
+            "output": output_deq,
+        }
+
+    # def dequantize_lut(self, outputs, strings, size):
+    #     medians = self._extend_ndims(self._get_medians().detach(), len(size))
+    #     medians = medians.expand(len(strings), *([-1] * (len(size) + 1)))
+    #     return self.dequantize(outputs, medians, medians.dtype)
+
 
 class GaussianConditional(EntropyModel):
     r"""Gaussian conditional layer, introduced by J. Ballé, D. Minnen, S. Singh,
@@ -544,7 +671,7 @@ class GaussianConditional(EntropyModel):
 
     This is a re-implementation of the Gaussian conditional layer in
     *tensorflow/compression*. See the `tensorflow documentation
-    <https://github.com/tensorflow/compression/blob/v1.3/docs/api_docs/python/tfc/GaussianConditional.md>`__
+    <https://tensorflow.github.io/compression/docs/api_docs/python/tfc/GaussianConditional.html>`__
     for more information.
     """
 

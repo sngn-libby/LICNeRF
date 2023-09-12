@@ -33,38 +33,38 @@ from src.compressproj.models import (
     Cheng2020Anchor,
     Cheng2020Attention,
     FactorizedPrior,
-    FactorizedPriorReLU,
     JointAutoregressiveHierarchicalPriors,
     MeanScaleHyperprior,
     ScaleHyperprior,
     JointCheckerboardHierarchicalPriors,
+    DE_Minnen2018,
 )
 
 from .pretrained import load_pretrained
 
 __all__ = [
     "bmshj2018_factorized",
-    "bmshj2018_factorized_relu",
     "bmshj2018_hyperprior",
     "mbt2018",
     "mbt2018_mean",
+    "mbt_de",
     "cheng2020_anchor",
     "cheng2020_attn",
-    "checkerboard",
+    "checkerboard2021",
 ]
 
 model_architectures = {
     "bmshj2018-factorized": FactorizedPrior,
-    "bmshj2018_factorized_relu": FactorizedPriorReLU,
     "bmshj2018-hyperprior": ScaleHyperprior,
     "mbt2018-mean": MeanScaleHyperprior,
     "mbt2018": JointAutoregressiveHierarchicalPriors,
+    "mbt-de": DE_Minnen2018,
     "cheng2020-anchor": Cheng2020Anchor,
     "cheng2020-attn": Cheng2020Attention,
-    "checkerboard": JointCheckerboardHierarchicalPriors,
+    "checkerboard2021": JointCheckerboardHierarchicalPriors,
 }
 
-root_url = "https://compressai.s3.amazonaws.com/models/v1"
+root_url = "https://compressproj.s3.amazonaws.com/models/v1"
 model_urls = {
     "bmshj2018-factorized": {
         "mse": {
@@ -154,6 +154,28 @@ model_urls = {
             8: f"{root_url}/mbt2018-ms-ssim-8-0cb49d43.pth.tar",
         },
     },
+    # "mbt2022": {
+    #     "mse": {
+    #         1: f"{root_url}/mbt2018-1-3f36cd77.pth.tar",
+    #         2: f"{root_url}/mbt2018-2-43b70cdd.pth.tar",
+    #         3: f"{root_url}/mbt2018-3-22901978.pth.tar",
+    #         4: f"{root_url}/mbt2018-4-456e2af9.pth.tar",
+    #         5: f"{root_url}/mbt2018-5-b4a046dd.pth.tar",
+    #         6: f"{root_url}/mbt2018-6-7052e5ea.pth.tar",
+    #         7: f"{root_url}/mbt2018-7-8ba2bf82.pth.tar",
+    #         8: f"{root_url}/mbt2018-8-dd0097aa.pth.tar",
+    #     },
+    #     "ms-ssim": {
+    #         1: f"{root_url}/mbt2018-ms-ssim-1-2878436b.pth.tar",
+    #         2: f"{root_url}/mbt2018-ms-ssim-2-c41cb208.pth.tar",
+    #         3: f"{root_url}/mbt2018-ms-ssim-3-d0dd64e8.pth.tar",
+    #         4: f"{root_url}/mbt2018-ms-ssim-4-a120e037.pth.tar",
+    #         5: f"{root_url}/mbt2018-ms-ssim-5-9b30e3b7.pth.tar",
+    #         6: f"{root_url}/mbt2018-ms-ssim-6-f8b3626f.pth.tar",
+    #         7: f"{root_url}/mbt2018-ms-ssim-7-16e6ff50.pth.tar",
+    #         8: f"{root_url}/mbt2018-ms-ssim-8-0cb49d43.pth.tar",
+    #     },
+    # },
     "cheng2020-anchor": {
         "mse": {
             1: f"{root_url}/cheng2020-anchor-1-dad2ebff.pth.tar",
@@ -203,16 +225,6 @@ cfgs = {
         7: (192, 320),
         8: (192, 320),
     },
-    "bmshj2018-factorized-relu": {
-        1: (128, 192),
-        2: (128, 192),
-        3: (128, 192),
-        4: (128, 192),
-        5: (128, 192),
-        6: (192, 320),
-        7: (192, 320),
-        8: (192, 320),
-    },
     "bmshj2018-hyperprior": {
         1: (128, 192),
         2: (128, 192),
@@ -243,6 +255,28 @@ cfgs = {
         7: (192, 320),
         8: (192, 320),
     },
+    "mbt-de": {
+        1: (192, 192),
+        2: (192, 192),
+        3: (192, 192),
+        4: (192, 192),
+        5: (192, 320),
+        6: (192, 320),
+        7: (192, 320),
+        8: (192, 320),
+    },
+    "checkerboard2021": {
+        1: (192, 192),
+        2: (192, 192),
+        3: (192, 192),
+        4: (192, 192),
+        5: (192, 384),
+        6: (192, 384),
+        7: (192, 384),
+        8: (192, 384),
+        9: (192, 384),
+        10: (192, 384),
+    },
     "cheng2020-anchor": {
         1: (128,),
         2: (128,),
@@ -259,21 +293,11 @@ cfgs = {
         5: (192,),
         6: (192,),
     },
-    "checkerboard": {
-        1: (192, 192),
-        2: (192, 192),
-        3: (192, 192),
-        4: (192, 192),
-        5: (192, 320),
-        6: (192, 320),
-        7: (192, 320),
-        8: (192, 320),
-    },
 }
 
 
 def _load_model(
-    architecture, metric, quality, pretrained=False, progress=True, **kwargs
+        architecture, metric, quality, pretrained=False, progress=True, **kwargs
 ):
     if architecture not in model_architectures:
         raise ValueError(f'Invalid architecture name "{architecture}"')
@@ -283,9 +307,9 @@ def _load_model(
 
     if pretrained:
         if (
-            architecture not in model_urls
-            or metric not in model_urls[architecture]
-            or quality not in model_urls[architecture][metric]
+                architecture not in model_urls
+                or metric not in model_urls[architecture]
+                or quality not in model_urls[architecture][metric]
         ):
             raise RuntimeError("Pre-trained model not yet available")
 
@@ -299,8 +323,16 @@ def _load_model(
     return model
 
 
+def error_check(metric, quality):
+    if metric not in ("mse", "ms-ssim"):
+        raise ValueError(f'Invalid metric "{metric}"')
+
+    if quality < 1 or quality > 10:
+        raise ValueError(f'Invalid quality "{quality}", should be between (1, 8)')
+
+
 def bmshj2018_factorized(
-    quality, metric="mse", pretrained=False, progress=True, **kwargs
+        quality, metric="mse", pretrained=False, progress=True, **kwargs
 ):
     r"""Factorized Prior model from J. Balle, D. Minnen, S. Singh, S.J. Hwang,
     N. Johnston: `"Variational Image Compression with a Scale Hyperprior"
@@ -313,44 +345,14 @@ def bmshj2018_factorized(
         pretrained (bool): If True, returns a pre-trained model
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    if metric not in ("mse", "ms-ssim"):
-        raise ValueError(f'Invalid metric "{metric}"')
-
-    if quality < 1 or quality > 8:
-        raise ValueError(f'Invalid quality "{quality}", should be between (1, 8)')
-
-    return _load_model(
-        "bmshj2018-factorized", metric, quality, pretrained, progress, **kwargs
-    )
-
-
-def bmshj2018_factorized_relu(
-    quality, metric="mse", pretrained=False, progress=True, **kwargs
-):
-    r"""Factorized Prior model from J. Balle, D. Minnen, S. Singh, S.J. Hwang,
-    N. Johnston: `"Variational Image Compression with a Scale Hyperprior"
-    <https://arxiv.org/abs/1802.01436>`_, Int Conf. on Learning Representations
-    (ICLR), 2018.
-    GDN activations are replaced by ReLU
-    Args:
-        quality (int): Quality levels (1: lowest, highest: 8)
-        metric (str): Optimized metric, choose from ('mse', 'ms-ssim')
-        pretrained (bool): If True, returns a pre-trained model
-        progress (bool): If True, displays a progress bar of the download to stderr
-    """
-    if metric not in ("mse", "ms-ssim"):
-        raise ValueError(f'Invalid metric "{metric}"')
-
-    if quality < 1 or quality > 8:
-        raise ValueError(f'Invalid quality "{quality}", should be between (1, 8)')
-
+    error_check(metric, quality)
     return _load_model(
         "bmshj2018-factorized", metric, quality, pretrained, progress, **kwargs
     )
 
 
 def bmshj2018_hyperprior(
-    quality, metric="mse", pretrained=False, progress=True, **kwargs
+        quality, metric="mse", pretrained=False, progress=True, **kwargs
 ):
     r"""Scale Hyperprior model from J. Balle, D. Minnen, S. Singh, S.J. Hwang,
     N. Johnston: `"Variational Image Compression with a Scale Hyperprior"
@@ -363,12 +365,7 @@ def bmshj2018_hyperprior(
         pretrained (bool): If True, returns a pre-trained model
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    if metric not in ("mse", "ms-ssim"):
-        raise ValueError(f'Invalid metric "{metric}"')
-
-    if quality < 1 or quality > 8:
-        raise ValueError(f'Invalid quality "{quality}", should be between (1, 8)')
-
+    error_check(metric, quality)
     return _load_model(
         "bmshj2018-hyperprior", metric, quality, pretrained, progress, **kwargs
     )
@@ -386,12 +383,7 @@ def mbt2018_mean(quality, metric="mse", pretrained=False, progress=True, **kwarg
         pretrained (bool): If True, returns a pre-trained model
         progress (bool): If True, displays a progress bar of the download to stderr
     """
-    if metric not in ("mse", "ms-ssim"):
-        raise ValueError(f'Invalid metric "{metric}"')
-
-    if quality < 1 or quality > 8:
-        raise ValueError(f'Invalid quality "{quality}", should be between (1, 8)')
-
+    error_check(metric, quality)
     return _load_model("mbt2018-mean", metric, quality, pretrained, progress, **kwargs)
 
 
@@ -407,13 +399,22 @@ def mbt2018(quality, metric="mse", pretrained=False, progress=True, **kwargs):
         pretrained (bool): If True, returns a pre-trained model
         progress (bool): If True, displays a progress bar of the download to stderr
     """
+    error_check(metric, quality)
+    return _load_model("mbt2018", metric, quality, pretrained, progress, **kwargs)
+
+
+def mbt_de(quality, metric="mse", pretrained=False, progress=True, **kwargs):
     if metric not in ("mse", "ms-ssim"):
         raise ValueError(f'Invalid metric "{metric}"')
 
     if quality < 1 or quality > 8:
         raise ValueError(f'Invalid quality "{quality}", should be between (1, 8)')
 
-    return _load_model("mbt2018", metric, quality, pretrained, progress, **kwargs)
+    return _load_model("mbt-de", metric, quality, pretrained, progress, **kwargs)
+
+def checkerboard2021(quality, metric="mse", pretrained=False, progress=True, **kwargs):
+    error_check(metric, quality)
+    return _load_model("checker2022", metric, quality, pretrained, progress, **kwargs)
 
 
 def cheng2020_anchor(quality, metric="mse", pretrained=False, progress=True, **kwargs):
@@ -460,14 +461,3 @@ def cheng2020_attn(quality, metric="mse", pretrained=False, progress=True, **kwa
     return _load_model(
         "cheng2020-attn", metric, quality, pretrained, progress, **kwargs
     )
-
-
-def checkerboard(quality, metric="mse", pretrained=False, progress=True, **kwargs):
-    if metric not in ("mse", "ms-ssim"):
-        raise ValueError(f'Invalid metric "{metric}"')
-
-    if quality < 1 or quality > 8:
-        raise ValueError(f'Invalid quality "{quality}", should be between (1, 8)')
-
-    return _load_model("checkerboard", metric, quality, pretrained, progress, **kwargs)
-

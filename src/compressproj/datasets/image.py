@@ -32,10 +32,7 @@ from pathlib import Path
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.compressproj.registry import register_dataset
 
-
-@register_dataset("ImageFolder")
 class ImageFolder(Dataset):
     """Load an image folder database. Training and testing image samples
     are respectively stored in separate directories:
@@ -63,7 +60,7 @@ class ImageFolder(Dataset):
         if not splitdir.is_dir():
             raise RuntimeError(f'Invalid directory "{root}"')
 
-        self.samples = sorted(f for f in splitdir.iterdir() if f.is_file())
+        self.samples = [f for f in splitdir.iterdir() if f.is_file()]
 
         self.transform = transform
 

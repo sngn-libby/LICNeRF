@@ -7,7 +7,7 @@ run.logbase = "~/logs"
 
 run.run_train = False
 run.run_eval = True
-run.run_test = True
+run.run_render = True
 
 run.research_model_name = "transformed_lic"
 run.lic_model_name = "mbt2018"

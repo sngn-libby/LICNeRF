@@ -27,20 +27,7 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from src.compressproj import (
-    datasets,
-    entropy_models,
-    latent_codecs,
-    layers,
-    losses,
-    models,
-    ops,
-    optimizers,
-    registry,
-    transforms,
-    typing,
-    zoo,
-)
+from src.compressproj import datasets, entropy_models, layers, models, ops
 
 try:
     from .version import __version__
@@ -88,22 +75,3 @@ def available_entropy_coders():
     Return the list of available entropy coders.
     """
     return _available_entropy_coders
-
-
-__all__ = [
-    "datasets",
-    "entropy_models",
-    "latent_codecs",
-    "layers",
-    "losses",
-    "models",
-    "ops",
-    "optimizers",
-    "registry",
-    "transforms",
-    "typing",
-    "zoo",
-    "available_entropy_coders",
-    "get_entropy_coder",
-    "set_entropy_coder",
-]

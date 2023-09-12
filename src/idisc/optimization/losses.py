@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from idisc.utils.misc import is_main_process
+from src.idisc.utils.misc import is_main_process
 
 
 class SILog(nn.Module):

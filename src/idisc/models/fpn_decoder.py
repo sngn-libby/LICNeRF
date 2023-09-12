@@ -10,7 +10,7 @@ import numpy as np
 from torch import nn
 from torch.nn import functional as F
 
-from idisc.utils import Conv2d, c2_xavier_fill, get_norm
+from src.idisc.utils import Conv2d, c2_xavier_fill, get_norm
 
 
 class BasePixelDecoder(nn.Module):

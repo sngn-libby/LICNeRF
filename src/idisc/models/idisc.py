@@ -11,9 +11,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from idisc.models.defattn_decoder import MSDeformAttnPixelDecoder
-from idisc.models.fpn_decoder import BasePixelDecoder
-from idisc.models.id_module import AFP, ISD
+from src.idisc.models.defattn_decoder import MSDeformAttnPixelDecoder
+from src.idisc.models.fpn_decoder import BasePixelDecoder
+from src.idisc.models.id_module import AFP, ISD
 
 
 class IDisc(nn.Module):
@@ -119,6 +119,7 @@ class IDisc(nn.Module):
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
         dict_model = torch.load(model_file, map_location=device)
+        # dict_model = torch.load(model_file, map_location=None)
         new_state_dict = deepcopy(
             {k.replace("module.", ""): v for k, v in dict_model.items()}
         )
@@ -152,7 +153,7 @@ class IDisc(nn.Module):
             config_backone["pretrained"] = pixel_encoder_pretrained
         import importlib
 
-        mod = importlib.import_module("idisc.models.encoder")
+        mod = importlib.import_module("src.idisc.models.encoder")
         pixel_encoder_factory = getattr(mod, config["model"]["pixel_encoder"]["name"])
         pixel_encoder = pixel_encoder_factory(**config_backone)
 
@@ -167,7 +168,7 @@ class IDisc(nn.Module):
         afp = AFP.build(config)
         isd = ISD.build(config)
 
-        mod = importlib.import_module("idisc.optimization.losses")
+        mod = importlib.import_module("src.idisc.optimization.losses")
         loss = getattr(mod, config["training"]["loss"]["name"]).build(config)
 
         return deepcopy(

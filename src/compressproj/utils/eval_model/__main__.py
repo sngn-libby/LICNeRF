@@ -32,12 +32,12 @@ Evaluate an end-to-end compression model on an image dataset.
 import argparse
 import json
 import math
+import os
 import sys
 import time
 
 from collections import defaultdict
-from pathlib import Path
-from typing import Any, Dict, List
+from typing import List
 
 import torch
 import torch.nn as nn
@@ -47,10 +47,10 @@ from PIL import Image
 from pytorch_msssim import ms_ssim
 from torchvision import transforms
 
-import compressai
+import src.compressproj
 
-from src.compressproj.ops import compute_padding
 from src.compressproj.zoo import image_models as pretrained_models
+from src.compressproj.zoo import load_state_dict
 from src.compressproj.zoo.image import model_architectures as architectures
 
 torch.backends.cudnn.deterministic = True
@@ -71,30 +71,20 @@ IMG_EXTENSIONS = (
 
 
 def collect_images(rootpath: str) -> List[str]:
-    image_files = []
-
-    for ext in IMG_EXTENSIONS:
-        image_files.extend(Path(rootpath).rglob(f"*{ext}"))
-    return sorted(image_files)
-
-
-def psnr(a: torch.Tensor, b: torch.Tensor, max_val: int = 255) -> float:
-    return 20 * math.log10(max_val) - 10 * torch.log10((a - b).pow(2).mean())
+    return [
+        os.path.join(rootpath, f)
+        for f in os.listdir(rootpath)
+        if os.path.splitext(f)[-1].lower() in IMG_EXTENSIONS
+    ]
 
 
-def compute_metrics(
-    org: torch.Tensor, rec: torch.Tensor, max_val: int = 255
-) -> Dict[str, Any]:
-    metrics: Dict[str, Any] = {}
-    org = (org * max_val).clamp(0, max_val).round()
-    rec = (rec * max_val).clamp(0, max_val).round()
-    metrics["psnr-rgb"] = psnr(org, rec).item()
-    metrics["ms-ssim-rgb"] = ms_ssim(org, rec, data_range=max_val).item()
-    return metrics
+def psnr(a: torch.Tensor, b: torch.Tensor) -> float:
+    mse = F.mse_loss(a, b).item()
+    return -10 * math.log10(mse)
 
 
 def read_image(filepath: str) -> torch.Tensor:
-    assert filepath.is_file()
+    assert os.path.isfile(filepath)
     img = Image.open(filepath).convert("RGB")
     return transforms.ToTensor()(img)
 
@@ -104,9 +94,19 @@ def inference(model, x):
     x = x.unsqueeze(0)
 
     h, w = x.size(2), x.size(3)
-    pad, unpad = compute_padding(h, w, min_div=2**6)  # pad to allow 6 strides of 2
-
-    x_padded = F.pad(x, pad, mode="constant", value=0)
+    p = 64  # maximum 6 strides of 2
+    new_h = (h + p - 1) // p * p
+    new_w = (w + p - 1) // p * p
+    padding_left = (new_w - w) // 2
+    padding_right = new_w - w - padding_left
+    padding_top = (new_h - h) // 2
+    padding_bottom = new_h - h - padding_top
+    x_padded = F.pad(
+        x,
+        (padding_left, padding_right, padding_top, padding_bottom),
+        mode="constant",
+        value=0,
+    )
 
     start = time.time()
     out_enc = model.compress(x_padded)
@@ -116,16 +116,16 @@ def inference(model, x):
     out_dec = model.decompress(out_enc["strings"], out_enc["shape"])
     dec_time = time.time() - start
 
-    out_dec["x_hat"] = F.pad(out_dec["x_hat"], unpad)
+    out_dec["x_hat"] = F.pad(
+        out_dec["x_hat"], (-padding_left, -padding_right, -padding_top, -padding_bottom)
+    )
 
-    # input images are 8bit RGB for now
-    metrics = compute_metrics(x, out_dec["x_hat"], 255)
     num_pixels = x.size(0) * x.size(2) * x.size(3)
     bpp = sum(len(s[0]) for s in out_enc["strings"]) * 8.0 / num_pixels
 
     return {
-        "psnr-rgb": metrics["psnr-rgb"],
-        "ms-ssim-rgb": metrics["ms-ssim-rgb"],
+        "psnr": psnr(x, out_dec["x_hat"]),
+        "ms-ssim": ms_ssim(x, out_dec["x_hat"], data_range=1.0).item(),
         "bpp": bpp,
         "encoding_time": enc_time,
         "decoding_time": dec_time,
@@ -140,8 +140,6 @@ def inference_entropy_estimation(model, x):
     out_net = model.forward(x)
     elapsed_time = time.time() - start
 
-    # input images are 8bit RGB for now
-    metrics = compute_metrics(x, out_net["x_hat"], 255)
     num_pixels = x.size(0) * x.size(2) * x.size(3)
     bpp = sum(
         (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
@@ -149,8 +147,7 @@ def inference_entropy_estimation(model, x):
     )
 
     return {
-        "psnr-rgb": metrics["psnr-rgb"],
-        "ms-ssim-rgb": metrics["ms-ssim-rgb"],
+        "psnr": psnr(x, out_net["x_hat"]),
         "bpp": bpp.item(),
         "encoding_time": elapsed_time / 2.0,  # broad estimation
         "decoding_time": elapsed_time / 2.0,
@@ -159,42 +156,22 @@ def inference_entropy_estimation(model, x):
 
 def load_pretrained(model: str, metric: str, quality: int) -> nn.Module:
     return pretrained_models[model](
-        quality=quality, metric=metric, pretrained=True, progress=False
+        quality=quality, metric=metric, pretrained=True
     ).eval()
 
 
-def load_checkpoint(arch: str, no_update: bool, checkpoint_path: str) -> nn.Module:
-    # update model if need be
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state_dict = checkpoint
-    # compatibility with 'not updated yet' trained nets
-    for key in ["network", "state_dict", "model_state_dict"]:
-        if key in checkpoint:
-            state_dict = checkpoint[key]
-
-    model_cls = architectures[arch]
-    net = model_cls.from_state_dict(state_dict)
-    if not no_update:
-        net.update(force=True)
-    return net.eval()
+def load_checkpoint(arch: str, checkpoint_path: str) -> nn.Module:
+    state_dict = load_state_dict(torch.load(checkpoint_path))
+    return architectures[arch].from_state_dict(state_dict).eval()
 
 
-def eval_model(
-    model: nn.Module,
-    outputdir: Path,
-    inputdir: Path,
-    filepaths,
-    entropy_estimation: bool = False,
-    trained_net: str = "",
-    description: str = "",
-    **args: Any,
-) -> Dict[str, Any]:
+def eval_model(model, filepaths, entropy_estimation=False, half=False):
     device = next(model.parameters()).device
     metrics = defaultdict(float)
-    for filepath in filepaths:
-        x = read_image(filepath).to(device)
+    for f in filepaths:
+        x = read_image(f).to(device)
         if not entropy_estimation:
-            if args["half"]:
+            if half:
                 model = model.half()
                 x = x.half()
             rv = inference(model, x)
@@ -202,32 +179,17 @@ def eval_model(
             rv = inference_entropy_estimation(model, x)
         for k, v in rv.items():
             metrics[k] += v
-        if args["per_image"]:
-            if not Path(outputdir).is_dir():
-                raise FileNotFoundError("Please specify output directory")
-
-            output_subdir = Path(outputdir) / Path(filepath).parent.relative_to(
-                inputdir
-            )
-            output_subdir.mkdir(parents=True, exist_ok=True)
-            image_metrics_path = output_subdir / f"{filepath.stem}-{trained_net}.json"
-            with image_metrics_path.open("wb") as f:
-                output = {
-                    "source": filepath.stem,
-                    "name": args["architecture"],
-                    "description": f"Inference ({description})",
-                    "results": rv,
-                }
-                f.write(json.dumps(output, indent=2).encode())
-
     for k, v in metrics.items():
         metrics[k] = v / len(filepaths)
     return metrics
 
 
 def setup_args():
+    parent_parser = argparse.ArgumentParser(
+        add_help=False,
+    )
+
     # Common options.
-    parent_parser = argparse.ArgumentParser(add_help=False)
     parent_parser.add_argument("dataset", type=str, help="dataset path")
     parent_parser.add_argument(
         "-a",
@@ -240,8 +202,8 @@ def setup_args():
     parent_parser.add_argument(
         "-c",
         "--entropy-coder",
-        choices=src.compressproj.available_entropy_coders(),
-        default=src.compressproj.available_entropy_coders()[0],
+        choices=compressproj.available_entropy_coders(),
+        default=compressproj.available_entropy_coders()[0],
         help="entropy coder (default: %(default)s)",
     )
     parent_parser.add_argument(
@@ -265,33 +227,7 @@ def setup_args():
         action="store_true",
         help="verbose mode",
     )
-    parent_parser.add_argument(
-        "-m",
-        "--metric",
-        type=str,
-        choices=["mse", "ms-ssim"],
-        default="mse",
-        help="metric trained against (default: %(default)s)",
-    )
-    parent_parser.add_argument(
-        "-d",
-        "--output_directory",
-        type=str,
-        default="",
-        help="path of output directory. Optional, required for output json file, results per image. Default will just print the output results.",
-    )
-    parent_parser.add_argument(
-        "-o",
-        "--output-file",
-        type=str,
-        default="",
-        help="output json file name, (default: architecture-entropy_coder.json)",
-    )
-    parent_parser.add_argument(
-        "--per-image",
-        action="store_true",
-        help="store results for each image of the dataset, separately",
-    )
+
     parser = argparse.ArgumentParser(
         description="Evaluate a model on an image dataset.", add_help=True
     )
@@ -300,29 +236,33 @@ def setup_args():
     # Options for pretrained models
     pretrained_parser = subparsers.add_parser("pretrained", parents=[parent_parser])
     pretrained_parser.add_argument(
+        "-m",
+        "--metric",
+        type=str,
+        choices=["mse", "ms-ssim"],
+        default="mse",
+        help="metric trained against (default: %(default)s)",
+    )
+    pretrained_parser.add_argument(
         "-q",
         "--quality",
         dest="qualities",
-        type=str,
-        default="1",
-        help="Pretrained model qualities. (example: '1,2,3,4') (default: %(default)s)",
+        nargs="+",
+        type=int,
+        default=(1,),
     )
 
     checkpoint_parser = subparsers.add_parser("checkpoint", parents=[parent_parser])
     checkpoint_parser.add_argument(
         "-p",
         "--path",
-        dest="checkpoint_paths",
+        dest="paths",
         type=str,
         nargs="*",
         required=True,
         help="checkpoint path",
     )
-    checkpoint_parser.add_argument(
-        "--no-update",
-        action="store_true",
-        help="Disable the default update of the model entropy parameters before eval",
-    )
+
     return parser
 
 
@@ -330,35 +270,26 @@ def main(argv):
     parser = setup_args()
     args = parser.parse_args(argv)
 
-    if args.source not in ["checkpoint", "pretrained"]:
+    if not args.source:
         print("Error: missing 'checkpoint' or 'pretrained' source.", file=sys.stderr)
         parser.print_help()
         raise SystemExit(1)
-
-    description = (
-        "entropy-estimation" if args.entropy_estimation else args.entropy_coder
-    )
 
     filepaths = collect_images(args.dataset)
     if len(filepaths) == 0:
         print("Error: no images found in directory.", file=sys.stderr)
         raise SystemExit(1)
 
-    src.compressproj.set_entropy_coder(args.entropy_coder)
-
-    # create output directory
-    if args.output_directory:
-        Path(args.output_directory).mkdir(parents=True, exist_ok=True)
+    compressproj.set_entropy_coder(args.entropy_coder)
 
     if args.source == "pretrained":
-        args.qualities = [int(q) for q in args.qualities.split(",") if q]
         runs = sorted(args.qualities)
         opts = (args.architecture, args.metric)
         load_func = load_pretrained
         log_fmt = "\rEvaluating {0} | {run:d}"
-    else:
-        runs = args.checkpoint_paths
-        opts = (args.architecture, args.no_update)
+    elif args.source == "checkpoint":
+        runs = args.paths
+        opts = (args.architecture,)
         load_func = load_checkpoint
         log_fmt = "\rEvaluating {run:s}"
 
@@ -368,24 +299,9 @@ def main(argv):
             sys.stderr.write(log_fmt.format(*opts, run=run))
             sys.stderr.flush()
         model = load_func(*opts, run)
-        if args.source == "pretrained":
-            trained_net = f"{args.architecture}-{args.metric}-{run}-{description}"
-        else:
-            cpt_name = Path(run).name[: -len(".tar.pth")]  # removesuffix() python3.9
-            trained_net = f"{cpt_name}-{description}"
-        print(f"Using trained model {trained_net}", file=sys.stderr)
         if args.cuda and torch.cuda.is_available():
             model = model.to("cuda")
-        args_dict = vars(args)
-        metrics = eval_model(
-            model,
-            args.output_directory,
-            args.dataset,
-            filepaths,
-            trained_net=trained_net,
-            description=description,
-            **args_dict,
-        )
+        metrics = eval_model(model, filepaths, args.entropy_estimation, args.half)
         for k, v in metrics.items():
             results[k].append(v)
 
@@ -397,21 +313,10 @@ def main(argv):
         "entropy estimation" if args.entropy_estimation else args.entropy_coder
     )
     output = {
-        "name": f"{args.architecture}-{args.metric}",
+        "name": args.architecture,
         "description": f"Inference ({description})",
         "results": results,
     }
-    if args.output_directory:
-        output_file = (
-            args.output_file
-            if args.output_file
-            else f"{args.architecture}-{description}"
-        )
-
-        with (Path(f"{args.output_directory}/{output_file}").with_suffix(".json")).open(
-            "wb"
-        ) as f:
-            f.write(json.dumps(output, indent=2).encode())
 
     print(json.dumps(output, indent=2))
 

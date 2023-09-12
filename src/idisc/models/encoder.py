@@ -5,7 +5,7 @@ import torch
 from timm.models.vision_transformer import _cfg
 from torch import nn
 
-from idisc.models.backbones import (Bottleneck, EfficientNet, ResNet,
+from src.idisc.models.backbones import (Bottleneck, EfficientNet, ResNet,
                                     SwinTransformer, _resnet)
 
 

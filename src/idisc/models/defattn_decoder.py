@@ -6,8 +6,8 @@ from torch import nn
 from torch.cuda.amp import autocast
 from torch.nn import functional as F
 
-from idisc.models.ops.modules import MSDeformAttn
-from idisc.utils import (Conv2d, PositionEmbeddingSine, _get_activation_fn,
+from src.idisc.models.ops.modules import MSDeformAttn
+from src.idisc.utils import (Conv2d, PositionEmbeddingSine, _get_activation_fn,
                          c2_xavier_fill, get_norm)
 
 

@@ -41,7 +41,7 @@ model_architectures = {
     "ssf2020": ScaleSpaceFlow,
 }
 
-root_url = "https://compressai.s3.amazonaws.com/models/v1"
+root_url = "https://compressproj.s3.amazonaws.com/models/v1"
 model_urls = {
     "ssf2020": {
         "mse": {

@@ -38,10 +38,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.compressproj.registry import register_dataset
 
-
-@register_dataset("VideoFolder")
 class VideoFolder(Dataset):
     """Load a video folder database. Training and testing video clips
     are stored in a directorie containing mnay sub-directorie like Vimeo90K Dataset:

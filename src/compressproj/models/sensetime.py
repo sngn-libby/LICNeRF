@@ -15,7 +15,6 @@ from .base import (
     SCALES_LEVELS,
     SCALES_MAX,
     SCALES_MIN,
-    CompressionModel,
     get_scale_table,
 )
 from .utils import conv, deconv

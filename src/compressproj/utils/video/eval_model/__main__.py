@@ -47,11 +47,10 @@ from torch import Tensor
 from torch.cuda import amp
 from torch.utils.model_zoo import tqdm
 
-import compressai
+import src.compressproj
 
 from src.compressproj.datasets import RawVideoSequence, VideoFormat
 from src.compressproj.models.video.google import ScaleSpaceFlow
-from src.compressproj.ops import compute_padding
 from src.compressproj.transforms.functional import (
     rgb2ycbcr,
     ycbcr2rgb,
@@ -70,8 +69,8 @@ RAWVIDEO_EXTENSIONS = (".yuv",)  # read raw yuv videos for now
 def collect_videos(rootpath: str) -> List[str]:
     video_files = []
     for ext in RAWVIDEO_EXTENSIONS:
-        video_files.extend(Path(rootpath).rglob(f"*{ext}"))
-    return sorted(video_files)
+        video_files.extend(Path(rootpath).glob(f"*{ext}"))
+    return video_files
 
 
 # TODO (racapef) duplicate from bench
@@ -119,8 +118,19 @@ def convert_rgb_to_yuv420(frame: Tensor) -> Tuple[np.ndarray, np.ndarray, np.nda
 
 def pad(x: Tensor, p: int = 2 ** (4 + 3)) -> Tuple[Tensor, Tuple[int, ...]]:
     h, w = x.size(2), x.size(3)
-    padding, _ = compute_padding(h, w, min_div=p)
-    x = F.pad(x, padding, mode="constant", value=0)
+    new_h = (h + p - 1) // p * p
+    new_w = (w + p - 1) // p * p
+    padding_left = (new_w - w) // 2
+    padding_right = new_w - w - padding_left
+    padding_top = (new_h - h) // 2
+    padding_bottom = new_h - h - padding_top
+    padding = (padding_left, padding_right, padding_top, padding_bottom)
+    x = F.pad(
+        x,
+        padding,
+        mode="constant",
+        value=0,
+    )
     return x, padding
 
 
@@ -348,7 +358,6 @@ def eval_model_entropy_estimation(net: nn.Module, sequence: Path) -> Dict[str, A
 
 def run_inference(
     filepaths,
-    inputdir: Path,
     net: nn.Module,
     outputdir: Path,
     force: bool = False,
@@ -360,9 +369,7 @@ def run_inference(
     results_paths = []
 
     for filepath in filepaths:
-        output_subdir = Path(outputdir) / Path(filepath).parent.relative_to(inputdir)
-        output_subdir.mkdir(parents=True, exist_ok=True)
-        sequence_metrics_path = output_subdir / f"{filepath.stem}-{trained_net}.json"
+        sequence_metrics_path = Path(outputdir) / f"{filepath.stem}-{trained_net}.json"
         results_paths.append(sequence_metrics_path)
 
         if force:
@@ -391,18 +398,11 @@ def run_inference(
     return results
 
 
-def load_checkpoint(arch: str, no_update: bool, checkpoint_path: str) -> nn.Module:
-    checkpoint = torch.load(checkpoint_path)
-    state_dict = checkpoint
-    # compatibility with 'not updated yet' trained nets
-    for key in ["network", "state_dict", "model_state_dict"]:
-        if key in checkpoint:
-            state_dict = checkpoint[key]
-
+def load_checkpoint(arch: str, checkpoint_path: str) -> nn.Module:
+    state_dict = torch.load(checkpoint_path)
+    state_dict = state_dict.get("network", state_dict)
     net = models[arch]()
     net.load_state_dict(state_dict)
-    if not no_update:
-        net.update(force=True)
     net.eval()
     return net
 
@@ -415,7 +415,7 @@ def load_pretrained(model: str, metric: str, quality: int) -> nn.Module:
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Evaluate a video compression network on a video dataset.",
+        description="Video compression network evaluation.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parent_parser = argparse.ArgumentParser(add_help=False)
@@ -442,8 +442,8 @@ def create_parser() -> argparse.ArgumentParser:
     parent_parser.add_argument(
         "-c",
         "--entropy-coder",
-        choices=src.compressproj.available_entropy_coders(),
-        default=src.compressproj.available_entropy_coders()[0],
+        choices=compressproj.available_entropy_coders(),
+        default=compressproj.available_entropy_coders()[0],
         help="entropy coder (default: %(default)s)",
     )
     parent_parser.add_argument(
@@ -465,13 +465,6 @@ def create_parser() -> argparse.ArgumentParser:
         default="mse",
         help="metric trained against (default: %(default)s)",
     )
-    parent_parser.add_argument(
-        "-o",
-        "--output-file",
-        type=str,
-        default="",
-        help="output json file name, (default: architecture-entropy_coder.json)",
-    )
 
     subparsers = parser.add_subparsers(help="model source", dest="source")
     subparsers.required = True
@@ -482,9 +475,9 @@ def create_parser() -> argparse.ArgumentParser:
         "-q",
         "--quality",
         dest="qualities",
-        type=str,
-        default="1",
-        help="Pretrained model qualities. (example: '1,2,3,4') (default: %(default)s)",
+        nargs="+",
+        type=int,
+        default=(1,),
     )
     checkpoint_parser = subparsers.add_parser("checkpoint", parents=[parent_parser])
     checkpoint_parser.add_argument(
@@ -495,11 +488,6 @@ def create_parser() -> argparse.ArgumentParser:
         nargs="*",
         required=True,
         help="checkpoint path",
-    )
-    checkpoint_parser.add_argument(
-        "--no-update",
-        action="store_true",
-        help="Disable the default update of the model entropy parameters before eval",
     )
     return parser
 
@@ -527,14 +515,13 @@ def main(args: Any = None) -> None:
     Path(outputdir).mkdir(parents=True, exist_ok=True)
 
     if args.source == "pretrained":
-        args.qualities = [int(q) for q in args.qualities.split(",") if q]
         runs = sorted(args.qualities)
         opts = (args.architecture, args.metric)
         load_func = load_pretrained
         log_fmt = "\rEvaluating {0} | {run:d}"
     else:
         runs = args.paths
-        opts = (args.architecture, args.no_update)
+        opts = (args.architecture,)
         load_func = load_checkpoint
         log_fmt = "\rEvaluating {run:s}"
 
@@ -557,7 +544,6 @@ def main(args: Any = None) -> None:
         args_dict = vars(args)
         metrics = run_inference(
             filepaths,
-            args.dataset,
             model,
             outputdir,
             trained_net=trained_net,
@@ -574,12 +560,7 @@ def main(args: Any = None) -> None:
         "results": results,
     }
 
-    if args.output_file == "":
-        output_file = f"{args.architecture}-{description}"
-    else:
-        output_file = args.output_file
-
-    with (Path(f"{outputdir}/{output_file}").with_suffix(".json")).open("wb") as f:
+    with (Path(f"{outputdir}/{args.architecture}-{description}.json")).open("wb") as f:
         f.write(json.dumps(output, indent=2).encode())
     print(json.dumps(output, indent=2))
 

@@ -86,8 +86,8 @@ def _compute_ms_ssim(a, b, max_val: float = 255.0) -> float:
 
 
 _metric_functions = {
-    "psnr-rgb": _compute_psnr,
-    "ms-ssim-rgb": _compute_ms_ssim,
+    "psnr": _compute_psnr,
+    "ms-ssim": _compute_ms_ssim,
 }
 
 
@@ -100,7 +100,7 @@ def compute_metrics(
     """Returns PSNR and MS-SSIM between images `a` and `b`."""
 
     if metrics is None:
-        metrics = ["psnr-rgb"]
+        metrics = ["psnr"]
 
     def _convert(x):
         if isinstance(x, Image.Image):
@@ -154,8 +154,7 @@ class Codec(abc.ABC):
         return args
 
     @classmethod
-    @abc.abstractmethod
-    def setup_args(cls, _parser):
+    def setup_args(cls, parser):
         pass
 
     @property
@@ -196,10 +195,6 @@ class PillowCodec(Codec):
     @property
     def name(self):
         raise NotImplementedError()
-
-    @classmethod
-    def setup_args(cls, _parser):
-        pass
 
     def _run_impl(self, in_filepath, quality):
         img = self._load_img(in_filepath)
@@ -256,10 +251,6 @@ class BinaryCodec(Codec):
     @property
     def name(self):
         raise NotImplementedError()
-
-    @classmethod
-    def setup_args(cls, _parser):
-        pass
 
     def _run_impl(self, in_filepath, quality):
         fd0, png_filepath = mkstemp(suffix=".png")
@@ -398,7 +389,7 @@ class BPG(BinaryCodec):
         return args
 
     def _get_encode_cmd(self, in_filepath, quality, out_filepath):
-        if not 0 <= int(quality) <= 51:
+        if not 0 <= quality <= 51:
             raise ValueError(f"Invalid quality value: {quality} (0,51)")
         cmd = [
             self.encoder_path,

@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from idisc.utils import (AttentionLayer, PositionEmbeddingSine,
+from src.idisc.utils import (AttentionLayer, PositionEmbeddingSine,
                          _get_activation_cls, get_norm)
 
 

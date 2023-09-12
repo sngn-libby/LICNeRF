@@ -32,8 +32,8 @@ Find the closest codec quality parameter to reach a given metric (bpp, ms-ssim,
 or psnr).
 
 Example usages:
-    * :code:`python -m src.compressproj.utils.find_close webp ~/picture.png 0.5 --metric bpp`
-    * :code:`python -m src.compressproj.utils.find_close jpeg ~/picture.png 35 --metric psnr --save`
+    * :code:`python -m compressproj.utils.find_close webp ~/picture.png 0.5 --metric bpp`
+    * :code:`python -m compressproj.utils.find_close jpeg ~/picture.png 35 --metric psnr --save`
 """
 
 import argparse
@@ -65,7 +65,7 @@ def get_codec_q_bounds(codec: Codec) -> Tuple[bool, int, int]:
 
 
 def find_closest(
-    codec: Codec, img: str, target: float, metric: str = "psnr-rgb"
+    codec: Codec, img: str, target: float, metric: str = "psnr"
 ) -> Tuple[int, Dict[str, float], Image.Image]:
     rev, lower, upper = get_codec_q_bounds(codec)
 
@@ -112,11 +112,7 @@ def setup_args():
     parser.add_argument("image", type=str, help="image filepath")
     parser.add_argument("target", type=float, help="target value to match")
     parser.add_argument(
-        "-m",
-        "--metric",
-        type=str,
-        choices=["bpp", "psnr-rgb", "ms-ssim-rgb"],
-        default="bpp",
+        "-m", "--metric", type=str, choices=["bpp", "psnr", "ms-ssim"], default="bpp"
     )
     parser.add_argument(
         "--save", action="store_true", help="Save reconstructed image to disk"

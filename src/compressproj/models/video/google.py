@@ -37,17 +37,22 @@ import torch.nn.functional as F
 
 from torch.cuda import amp
 
-from src.compressproj.entropy_models import EntropyBottleneck, GaussianConditional
+from src.compressproj.entropy_models import GaussianConditional
 from src.compressproj.layers import QReLU
-from src.compressproj.ops import quantize_ste
-from src.compressproj.registry import register_model
 
-from ..base import CompressionModel
-from ..utils import conv, deconv, gaussian_blur, gaussian_kernel2d, meshgrid2d
+from ..google import CompressionModel, get_scale_table
+from ..utils import (
+    conv,
+    deconv,
+    gaussian_blur,
+    gaussian_kernel2d,
+    meshgrid2d,
+    quantize_ste,
+    update_registered_buffers,
+)
 
 
-@register_model("ssf2020")
-class ScaleSpaceFlow(CompressionModel):
+class ScaleSpaceFlow(nn.Module):
     r"""Google's first end-to-end optimized video compression from E.
     Agustsson, D. Minnen, N. Johnston, J. Balle, S. J. Hwang, G. Toderici: `"Scale-space flow for end-to-end
     optimized video compression" <https://openaccess.thecvf.com/content_CVPR_2020/html/Agustsson_Scale-Space_Flow_for_End-to-End_Optimized_Video_Compression_CVPR_2020_paper.html>`_,
@@ -144,8 +149,7 @@ class ScaleSpaceFlow(CompressionModel):
 
         class Hyperprior(CompressionModel):
             def __init__(self, planes: int = 192, mid_planes: int = 192):
-                super().__init__()
-                self.entropy_bottleneck = EntropyBottleneck(mid_planes)
+                super().__init__(entropy_bottleneck_channels=mid_planes)
                 self.hyper_encoder = HyperEncoder(planes, mid_planes, planes)
                 self.hyper_decoder_mean = HyperDecoder(planes, mid_planes, planes)
                 self.hyper_decoder_scale = HyperDecoderWithQReLU(
@@ -382,7 +386,7 @@ class ScaleSpaceFlow(CompressionModel):
 
         aux_loss_list = []
         for m in self.modules():
-            if isinstance(m, CompressionModel) and m is not self:
+            if isinstance(m, CompressionModel):
                 aux_loss_list.append(m.aux_loss())
 
         return aux_loss_list
@@ -409,6 +413,7 @@ class ScaleSpaceFlow(CompressionModel):
         return frame_strings, shape_infos
 
     def decompress(self, strings, shapes):
+
         if not isinstance(strings, List) or not isinstance(shapes, List):
             raise RuntimeError(f"Invalid number of frames: {len(strings)}.")
 
@@ -429,9 +434,75 @@ class ScaleSpaceFlow(CompressionModel):
 
         return dec_frames
 
+    def load_state_dict(self, state_dict):
+
+        # Dynamically update the entropy bottleneck buffers related to the CDFs
+        update_registered_buffers(
+            self.img_hyperprior.gaussian_conditional,
+            "img_hyperprior.gaussian_conditional",
+            ["_quantized_cdf", "_offset", "_cdf_length", "scale_table"],
+            state_dict,
+        )
+        update_registered_buffers(
+            self.img_hyperprior.entropy_bottleneck,
+            "img_hyperprior.entropy_bottleneck",
+            ["_quantized_cdf", "_offset", "_cdf_length"],
+            state_dict,
+        )
+
+        update_registered_buffers(
+            self.res_hyperprior.gaussian_conditional,
+            "res_hyperprior.gaussian_conditional",
+            ["_quantized_cdf", "_offset", "_cdf_length", "scale_table"],
+            state_dict,
+        )
+        update_registered_buffers(
+            self.res_hyperprior.entropy_bottleneck,
+            "res_hyperprior.entropy_bottleneck",
+            ["_quantized_cdf", "_offset", "_cdf_length"],
+            state_dict,
+        )
+
+        update_registered_buffers(
+            self.motion_hyperprior.gaussian_conditional,
+            "motion_hyperprior.gaussian_conditional",
+            ["_quantized_cdf", "_offset", "_cdf_length", "scale_table"],
+            state_dict,
+        )
+        update_registered_buffers(
+            self.motion_hyperprior.entropy_bottleneck,
+            "motion_hyperprior.entropy_bottleneck",
+            ["_quantized_cdf", "_offset", "_cdf_length"],
+            state_dict,
+        )
+
+        super().load_state_dict(state_dict)
+
     @classmethod
     def from_state_dict(cls, state_dict):
         """Return a new model instance from `state_dict`."""
         net = cls()
         net.load_state_dict(state_dict)
         return net
+
+    def update(self, scale_table=None, force=False):
+        if scale_table is None:
+            scale_table = get_scale_table()
+
+        updated = self.img_hyperprior.gaussian_conditional.update_scale_table(
+            scale_table, force=force
+        )
+
+        updated |= self.img_hyperprior.entropy_bottleneck.update(force=force)
+
+        updated |= self.res_hyperprior.gaussian_conditional.update_scale_table(
+            scale_table, force=force
+        )
+        updated |= self.res_hyperprior.entropy_bottleneck.update(force=force)
+
+        updated |= self.motion_hyperprior.gaussian_conditional.update_scale_table(
+            scale_table, force=force
+        )
+        updated |= self.motion_hyperprior.entropy_bottleneck.update(force=force)
+
+        return updated

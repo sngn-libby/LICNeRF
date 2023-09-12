@@ -8,8 +8,8 @@ import torch.utils.data.distributed
 from torch import nn
 from torch.utils.data import DataLoader
 
-from idisc.utils.metrics import RunningMetric
-from idisc.utils.misc import is_main_process
+from src.idisc.utils.metrics import RunningMetric
+from src.idisc.utils.misc import is_main_process
 
 
 def log_losses(losses_all):

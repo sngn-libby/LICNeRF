@@ -57,9 +57,6 @@ def parse_json_file(filepath, metric):
     else:
         results = data
 
-    if metric in ["psnr", "ms-ssim"]:
-        metric = f"{metric}-rgb"
-
     if metric not in results:
         raise ValueError(
             f'Error: metric "{metric}" not available.'
@@ -67,7 +64,7 @@ def parse_json_file(filepath, metric):
         )
 
     try:
-        if "ms-ssim" in metric:
+        if metric == "ms-ssim":
             # Convert to db
             values = np.array(results[metric])
             results[metric] = -10 * np.log10(1 - values)
