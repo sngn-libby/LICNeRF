@@ -27,36 +27,49 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from .image import (
-    bmshj2018_factorized,
-    bmshj2018_hyperprior,
-    cheng2020_anchor,
-    cheng2020_attn,
-    mbt2018,
-    mbt2018_mean,
-    checkerboard2021,
-    mbt_de,
-    mbt_de_pe,
-)
-from .pretrained import load_pretrained as load_state_dict
-from .video import ssf2020
+import math
 
-image_models = {
-    "bmshj2018-factorized": bmshj2018_factorized,
-    "bmshj2018-hyperprior": bmshj2018_hyperprior,
-    "mbt2018-mean": mbt2018_mean,
-    "mbt2018": mbt2018,
-    "mbt-de": mbt_de,
-    "mbt-de-pe": mbt_de_pe,
-    "cheng2020-anchor": cheng2020_anchor,
-    "cheng2020-attn": cheng2020_attn,
-    "checkerboard2012": checkerboard2021,
-}
+import torch
+import torch.nn as nn
 
-video_models = {
-    "ssf2020": ssf2020,
-}
+from pytorch_msssim import ms_ssim
 
-models = {}
-models.update(image_models)
-models.update(video_models)
+from src.compressproj.registry import register_criterion
+
+
+@register_criterion("RateDistortionLoss")
+class RateDistortionLoss(nn.Module):
+    """Custom rate distortion loss with a Lagrangian parameter."""
+
+    def __init__(self, lmbda=0.01, metric="mse", return_type="all"):
+        super().__init__()
+        if metric == "mse":
+            self.metric = nn.MSELoss()
+        elif metric == "ms-ssim":
+            self.metric = ms_ssim
+        else:
+            raise NotImplementedError(f"{metric} is not implemented!")
+        self.lmbda = lmbda
+        self.return_type = return_type
+
+    def forward(self, output, target):
+        N, _, H, W = target.size()
+        out = {}
+        num_pixels = N * H * W
+
+        out["bpp_loss"] = sum(
+            (torch.log(likelihoods).sum() / (-math.log(2) * num_pixels))
+            for likelihoods in output["likelihoods"].values()
+        )
+        if self.metric == ms_ssim:
+            out["ms_ssim_loss"] = self.metric(output["x_hat"], target, data_range=1)
+            distortion = 1 - out["ms_ssim_loss"]
+        else:
+            out["mse_loss"] = self.metric(output["x_hat"], target)
+            distortion = 255**2 * out["mse_loss"]
+
+        out["loss"] = self.lmbda * distortion + out["bpp_loss"]
+        if self.return_type == "all":
+            return out
+        else:
+            return out[self.return_type]

@@ -1,5 +1,25 @@
 import os
+import argparse
+import math
 import random
+import json
+import shutil
+import sys
+import time
+from typing import *
+from datetime import datetime
+
+import numpy as np
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+from torch.utils.data import DataLoader
+from torchvision import transforms
+
+from pytorch_msssim import ms_ssim
 
 from src.compressproj.models.utils import (
     parse_args,
@@ -8,10 +28,11 @@ from src.compressproj.models.utils import (
     AverageMeter,
     RateDistortionLoss,
 )
+from src.compressproj.datasets import ImageFolder
 from src.compressproj.zoo import image_models
+# from src.idisc.models.idisc import IDisc
 from src.newcrfs.NewCRFDepth import NewCRFDepth
 from src.newcrfs.utils import *
-from utils.train_utils import *
 
 torch.set_printoptions(sci_mode=False)
 
@@ -24,25 +45,49 @@ def main(argv):
         torch.manual_seed(args.seed)
         random.seed(args.seed)
 
+    train_transforms = transforms.Compose(
+        [transforms.RandomCrop(args.patch_size), transforms.ToTensor()]
+    )
+    test_transforms = transforms.Compose(
+        [transforms.CenterCrop(args.patch_size), transforms.ToTensor()]
+    )
+
+    train_dataset = ImageFolder(args.dataset, split="train", transform=train_transforms)
+    test_dataset = ImageFolder(args.dataset, split="test", transform=test_transforms)
+    kodak_dataset = ImageFolder(args.test_dataset, split="kodak", transform=test_transforms)
+
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
 
-    train_dataloader, test_dataloader, kodak_dataloader = set_dataloader(args, device)
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=True,
+        pin_memory=(device == "cuda"),
+    )
+
+    test_dataloader = DataLoader(
+        test_dataset,
+        batch_size=args.test_batch_size,
+        num_workers=args.num_workers,
+        shuffle=False,
+        pin_memory=(device == "cuda"),
+    )
+
+    kodak_dataloader = DataLoader(
+        kodak_dataset,
+        batch_size=args.test_batch_size,
+        num_workers=args.num_workers,
+        shuffle=False,
+        pin_memory=(device == "cuda"),
+    )
 
     lic_model = image_models[args.model](quality=args.quality)
     lic_model = lic_model.to(device)
 
-    # Depth Estimation Network
-    print(f":: Log :: DE Config file at {args.de_config}")
-    de_model = NewCRFDepth(version="large07", inv_depth=False, max_depth=80)
-    if args.de_ckpt:
-        print(f":: Model :: DE Loading ckpt {args.de_ckpt}")
-        de_checkpoints = torch.load(args.de_ckpt)
-        de_model.parse_and_load_state_dict(de_checkpoints["model"])
-    de_model = de_model.to(device)
-
+    #torchsummary.summary(lic_model, (3, *args.patch_size), device=device)
     if args.cuda and torch.cuda.device_count() > 1:
         lic_model = CustomDataParallel(lic_model)
-        de_model = CustomDataParallel(de_model)
 
     optimizer, aux_optimizer = configure_optimizers(lic_model, args)
     lr_scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[150, 180, 210, 240], gamma=1 / 3)
@@ -65,7 +110,6 @@ def main(argv):
     for epoch in range(last_epoch, args.epochs):
         train_one_epoch(
             lic_model,
-            de_model,
             train_dataloader,
             test_dataloader,
             criterion,
@@ -74,7 +118,7 @@ def main(argv):
             epoch,
             args.clip_max_norm,
         )
-        loss = validate(epoch, lic_model, de_model, test_dataloader, criterion)
+        loss = validate(epoch, lic_model, test_dataloader, criterion)
         lr_scheduler.step(loss)
         is_best = loss < best_loss
         best_loss = min(loss, best_loss)
@@ -91,15 +135,13 @@ def main(argv):
                     "lr_scheduler": lr_scheduler.state_dict(),
                 },
                 is_best,
-                False,
             )
 
-    test_model(last_epoch, lic_model, de_model, kodak_dataloader, args.lmbda)
+    test_model(last_epoch, lic_model, kodak_dataloader, args.lmbda)
 
 
 def train_one_epoch(
         lic_model,
-        de_model,
         train_dataloader,
         test_dataloader,
         criterion,
@@ -118,17 +160,7 @@ def train_one_epoch(
         optimizer.zero_grad()
         aux_optimizer.zero_grad()
 
-        with torch.no_grad(): # with lic dataset --> no context
-            # depth, _, _ = de_model(d)
-            depth_est = de_model(d)
-
-            d_flip = flip_lr(d)
-            depth_est_flip = de_model(d_flip)
-            depth = post_process_depth(depth_est, depth_est_flip)
-
-        d_cat = torch.concat([d, depth], dim=1) # n_channel - 1
-
-        out = lic_model(d_cat)
+        out = lic_model(d)
         out_criterion = criterion(out, d)
         out_criterion["loss"].backward()
         if clip_max_norm > 0:
@@ -154,7 +186,6 @@ def train_one_epoch(
 def validate(
         epoch,
         lic_model: nn.Module,
-        de_model: nn.Module,
         test_dataloader,
         criterion,
 ):
@@ -170,14 +201,7 @@ def validate(
     with torch.no_grad():
         for d in test_dataloader:
             d = d.to(device)
-            # depth, _, _ = de_model(d)
-            depth_est = de_model(d)
-            d_flip = flip_lr(d)
-            depth_est_flip = de_model(d_flip)
-            depth = post_process_depth(depth_est, depth_est_flip)
-
-            d_cat = torch.concat([d, depth], dim=1)
-            out = lic_model(d_cat)
+            out = lic_model(d)
             out_criterion = criterion(out, d)
 
             aux_loss.update(lic_model.aux_loss())
@@ -199,7 +223,6 @@ def validate(
 def test_model(
         epoch,
         lic_model: nn.Module,
-        de_model: nn.Module,
         test_dataloader,
         lmbda
 ):
@@ -215,9 +238,7 @@ def test_model(
     with torch.no_grad():
         for d in test_dataloader:
             d = d.to(device)
-            depth, _, _ = de_model(d)
-            d_cat = torch.concat([d, depth], dim=1)
-            out_enc = lic_model.compress(d_cat)
+            out_enc = lic_model.compress(d)
             out_dec = lic_model.decompress(strings=out_enc["strings"], shape=out_enc["shape"])
 
             bpp = update_meter(bpp_loss, d, out_enc, out_dec, "bpp")
@@ -235,7 +256,65 @@ def test_model(
         f"\tMS-SSIM: {avg_msssim.avg:.6f}\n"
     )
 
-    return loss.avg
+    return loss.av
+
+
+def update_meter(meter, d, out_enc, out_dec, key):
+    def mse(a: torch.Tensor, b: torch.Tensor) -> float:
+        return F.mse_loss(a, b).item()
+
+    if "bpp" in key:
+        num_pixels = d.shape[-2] * d.shape[-1]
+        val = sum(len(s[0]) for s in out_enc["strings"]) * 8. / num_pixels
+    elif "mse" in key:
+        val = mse(d, out_dec["x_hat"])
+    elif "pnsr" == key:
+        val = psnr(d, out_dec["x_hat"])
+    elif "ms_ssim" == key:
+        val = ms_ssim(d, out_dec["x_hat"], data_range=1.).item()
+    else:
+        return None
+
+    meter.update(val)
+    return val
+
+
+def configure_optimizers(net, args):
+    """Separate parameters for the main optimizer and the auxiliary optimizer.
+    Return two optimizers"""
+
+    parameters = {
+        n
+        for n, p in net.named_parameters()
+        if not n.endswith(".quantiles") and p.requires_grad
+    }
+    aux_parameters = {
+        n
+        for n, p in net.named_parameters()
+        if n.endswith(".quantiles") and p.requires_grad
+    }
+
+    # Make sure we don't have an intersection of parameters
+    params_dict = dict(net.named_parameters())
+    inter_params = parameters & aux_parameters
+    union_params = parameters | aux_parameters
+
+    assert len(inter_params) == 0
+    assert len(union_params) - len(params_dict.keys()) == 0
+
+    optimizer = optim.Adam(
+        (params_dict[n] for n in sorted(parameters)),
+        lr=args.learning_rate,
+    )
+    aux_optimizer = optim.Adam(
+        (params_dict[n] for n in sorted(aux_parameters)),
+        lr=args.aux_learning_rate,
+    )
+    return optimizer, aux_optimizer
+
+
+def psnr(a: torch.Tensor, b: torch.Tensor) -> float:
+    return -10 * math.log10(F.mse_loss(a, b))
 
 
 if __name__ == "__main__":

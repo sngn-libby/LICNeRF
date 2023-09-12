@@ -27,36 +27,10 @@
 # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
 # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from .image import (
-    bmshj2018_factorized,
-    bmshj2018_hyperprior,
-    cheng2020_anchor,
-    cheng2020_attn,
-    mbt2018,
-    mbt2018_mean,
-    checkerboard2021,
-    mbt_de,
-    mbt_de_pe,
-)
-from .pretrained import load_pretrained as load_state_dict
-from .video import ssf2020
+from typing import Callable, Dict
 
-image_models = {
-    "bmshj2018-factorized": bmshj2018_factorized,
-    "bmshj2018-hyperprior": bmshj2018_hyperprior,
-    "mbt2018-mean": mbt2018_mean,
-    "mbt2018": mbt2018,
-    "mbt-de": mbt_de,
-    "mbt-de-pe": mbt_de_pe,
-    "cheng2020-anchor": cheng2020_anchor,
-    "cheng2020-attn": cheng2020_attn,
-    "checkerboard2012": checkerboard2021,
+from torchvision import transforms
+
+TRANSFORMS: Dict[str, Callable[..., Callable]] = {
+    k: v for k, v in transforms.__dict__.items() if k[0].isupper()
 }
-
-video_models = {
-    "ssf2020": ssf2020,
-}
-
-models = {}
-models.update(image_models)
-models.update(video_models)
