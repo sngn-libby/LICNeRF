@@ -16,8 +16,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-from torchvision import transforms
-
 from pytorch_lightning import LightningModule
 from pytorch_msssim import ms_ssim
 
@@ -35,12 +33,17 @@ from utils.train_utils import *
 # nerfusion model
 from src.nerfusion.opt import get_opts
 from src.nerfusion.models.nerfusion import NeRFusion2
-from src.nerfusion.models.rendering import render, MAX_SAMPLES
+from src.nerfusion.models.rendering import render_depth_map, MAX_SAMPLES
 
 # data
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader
+from src.data.ray_utils import batchified_get_rays
+from torchvision import transforms
+from src.data.data_util.nerf_360_v2 import *
 from src.nerfusion.datasets import dataset_dict
 from src.nerfusion.datasets.ray_utils import axisangle_to_R, get_rays
+from src.data.sampler import DDPSequnetialSampler, MultipleImageDDPSampler
+
 
 torch.set_printoptions(sci_mode=False)
 
@@ -140,20 +143,19 @@ def train_one_epoch(
     device = next(lic_model.parameters()).device
 
     for i, batch in enumerate(train_dataloader):
-        d = batch["rgb"]
+        d = batch["image"]
         d = d.to(device)
 
         optimizer.zero_grad()
         aux_optimizer.zero_grad()
 
         with torch.no_grad(): # with lic dataset --> no context
-            poses = batch["pose"]
-            directions = batch["direction"]
-            rays_o, rays_d = get_rays(directions, poses)
+            rays_o, rays_d = batch["rays_o"], batch["rays_d"]
             kwargs = {"test_time": True, "random_bg": True}
-            nerf_res = render(nerf, rays_o, rays_d, **kwargs)  # 중간 결과로 받아오기
+            depth = render_depth_map(nerf, rays_o, rays_d, **kwargs)  # 중간 결과로 받아오기
+            print(f":: DEBUG :: depth.shape {depth.shape}")
 
-        d_cat = torch.concat([d, nerf_res['rgb']], dim=1)
+        d_cat = torch.concat([d, depth], dim=1)
 
         out = lic_model(d_cat)
         out_criterion = criterion(out, d)
@@ -275,21 +277,238 @@ def test_model(
     return loss.avg
 
 
+def load_nerf360v2_dataset(args, transform):
+    return NeRF360v2_Dataset(**load_nerf360v2_data(args), transform=transform)
+
+
+def load_nerf360v2_data(args):
+    datadir = args.dataset
+    scene_name = args.scene
+    factor = 4
+    cam_scale_factor = 0.95
+    train_skip = 1
+    val_skip = 1
+    test_skip = 1
+    near = None
+    far = None
+    strict_scaling = False
+
+    # res = (
+    (
+        images,
+        intrinsics,
+        extrinsics,
+        image_sizes,
+        near,
+        far,
+        ndc_coeffs,
+        i_split, #(i_train, i_val, i_test, i_all),
+        render_poses
+    ) = load_nerf_360_v2_data(
+        datadir=datadir,
+        scene_name=scene_name,
+        factor=factor,
+        cam_scale_factor=cam_scale_factor,
+        train_skip=train_skip,
+        val_skip=val_skip,
+        test_skip=test_skip,
+        near=near,
+        far=far,
+        strict_scaling=strict_scaling,
+    )
+
+    return {
+        "images":images,
+        "intrinsics":intrinsics,
+        "extrinsics":extrinsics,
+        "image_sizes":image_sizes,
+        "near":near,
+        "far":far,
+        "ndc_coeffs":ndc_coeffs,
+        "i_split":i_split,
+        "render_poses":render_poses,
+    }
+    #return res
+
+
+class NeRF360v2_Dataset(Dataset):
+    def __init__(
+            self,
+            images,
+            intrinsics,
+            extrinsics,
+            image_sizes,
+            near,
+            far,
+            ndc_coeffs,
+            i_split,
+            render_poses,
+            use_pixel_centers=True,
+            load_radii=False,
+            ndc_coord=False,
+            multlosses=None,
+            num_devices=torch.cuda.device_count() * 4,
+            transform=None,
+    ):
+        for name, value in vars().items():
+            if name not in ["self", "__class__"]:
+                setattr(self, name, value)
+
+        normals = None
+        ray_info = self.parse_info(images, normals, render_poses, i_split[0])
+        for name, value in ray_info.items():
+            setattr(self, name, value)
+
+    def len(self):
+        return len(self.rays_d)
+
+    def __getitem__(self, idx):
+        ret = {}
+
+        ret["rays_o"] = self.rays_o[idx]
+        ret["rays_d"] = self.rays_d[idx]
+        ret["viewdirs"] = self.viewdirs[idx]
+        ret["image"] = np.zeros_like(ret["rays_o"])
+        ret["radii"] = np.zeros((ret["rays_o"].shape[0], 1))
+        ret["multloss"] = np.zeros((ret["rays_o"].shape[0], 1))
+        ret["normals"] = np.zeros_like(ret["rays_o"])
+
+        if self.images is not None:
+            image = torch.from_numpy(self.images[idx])
+            if self.transform is not None:
+                image = self.transform(image)
+            ret["image"] = image
+
+        if self.radii is not None:
+            ret["radii"] = self.radii[idx]
+
+        if self.multloss is not None:
+            ret["multloss"] = self.multloss[idx]
+
+        if self.normals is not None:
+            ret["normals"] = torch.from_numpy(self.normals[idx])
+
+        return ret
+
+
+    def parse_info(
+            self,
+            _images,
+            _normals,
+            render_poses,
+            idx,
+            dummy=True,
+    ):
+        images = None
+        normals = None
+        radii = None
+        multloss = None
+
+        if _images is not None:
+            extrinsics_idx = self.extrinsics[idx]
+            intrinsics_idx = self.intrinsics[idx]
+            image_sizes_idx = self.image_sizes[idx]
+        else:
+            extrinsics_idx = render_poses
+            N_render = len(render_poses)
+            intrinsics_idx = np.stack([self.intrinsics[0] for _ in range(N_render)])
+            image_sizes_idx = np.stack([self.image_sizes[0] for _ in range(N_render)])
+
+        _rays_o, _rays_d, _viewdirs, _radii, _multloss = batchified_get_rays(
+            intrinsics_idx,
+            extrinsics_idx,
+            image_sizes_idx,
+            self.use_pixel_centers,
+            self.load_radii,
+            self.ndc_coord,
+            self.ndc_coeffs,
+            self.multlosses[idx] if self.multlosses is not None else None,
+        )
+
+        device_count = self.num_devices
+        n_dset = len(_rays_o)
+        dummy_num = (
+            (device_count - n_dset % device_count) % device_count if dummy else 0
+        )
+
+        rays_o = np.zeros((n_dset + dummy_num, 3), dtype=np.float32)
+        rays_d = np.zeros((n_dset + dummy_num, 3), dtype=np.float32)
+        viewdirs = np.zeros((n_dset + dummy_num, 3), dtype=np.float32)
+
+        rays_o[:n_dset], rays_o[n_dset:] = _rays_o, _rays_o[:dummy_num]
+        rays_d[:n_dset], rays_d[n_dset:] = _rays_d, _rays_d[:dummy_num]
+        viewdirs[:n_dset], viewdirs[n_dset:] = _viewdirs, _viewdirs[:dummy_num]
+
+        viewdirs = viewdirs / np.linalg.norm(viewdirs, axis=1, keepdims=True)
+
+        if _images is not None:
+            images_idx = np.concatenate([_images[i].reshape(-1, 3) for i in idx])
+            images = np.zeros((n_dset + dummy_num, 3))
+            images[:n_dset] = images_idx
+            images[n_dset:] = images[:dummy_num]
+
+        if _normals is not None:
+            normals_idx = np.concatenate([_normals[i].reshape(-1, 4) for i in idx])
+            normals = np.zeros((n_dset + dummy_num, 4))
+            normals[:n_dset] = normals_idx
+            normals[n_dset:] = normals[:dummy_num]
+
+        if _radii is not None:
+            radii = np.zeros((n_dset + dummy_num, 1), dtype=np.float32)
+            radii[:n_dset], radii[n_dset:] = _radii, _radii[:dummy_num]
+
+        if _multloss is not None:
+            multloss = np.zeros((n_dset + dummy_num, 1), dtype=np.float32)
+            multloss[:n_dset], multloss[n_dset:] = _multloss, _multloss[:dummy_num]
+
+        rays_info = {
+            "rays_o": rays_o,
+            "rays_d": rays_d,
+            "viewdirs": viewdirs,
+            "images": images,
+            "radii": radii,
+            "multloss": multloss,
+            "normals": normals,
+        }
+        return rays_info
+
+
 def set_nerf_dataloader(args, device):
-    dataset = dataset_dict[args.dataset]
-    kwargs = {'root_dir': os.path.join(os.path.expanduser("~"), "datasets"),
-              'downsample': args.downsample}
-    train_dataset = dataset(split=args.split, **kwargs)
-    train_dataset.batch_size = args.batch_size
-    train_dataset.ray_sampling_strategy = args.ray_sampling_strategy
-    test_dataset = dataset(split='test', **kwargs)
+
+    train_transforms = transforms.Compose(
+        [transforms.RandomCrop(args.patch_size), transforms.ToTensor()]
+    )
+    test_transforms = transforms.Compose(
+        [transforms.CenterCrop(args.patch_size), transforms.ToTensor()]
+    )
+
+    train_dataset = load_nerf360v2_dataset(args, transform=train_transforms)
+    test_dataset = load_nerf360v2_dataset(args, transform=test_transforms)
+
+    train_sampler = MultipleImageDDPSampler(
+        batch_size=args.batch_size,
+        num_replicas=None,
+        rank=None,
+        total_len=len(train_dataset),
+        epoch_size=args.epochs,
+        tpu=False,
+    )
+    test_sampler = DDPSequnetialSampler(
+        batch_size=args.batch_size,
+        num_replicas=None,
+        rank=None,
+        N_total=len(test_dataset),
+        tpu=False,
+    )
 
     train_dataloader = DataLoader(train_dataset,
+                                  batch_sampler=train_sampler,
                                   num_workers=torch.cuda.device_count() * 4,
                                   persistent_workers=True,
                                   batch_size=None,
                                   pin_memory=True if device == "cuda" else False)
     test_dataloader = DataLoader(test_dataset,
+                                 batch_sampler=test_sampler,
                                  num_workers=torch.cuda.device_count() * 4,
                                  batch_size=None,
                                  pin_memory=True if device == "cuda" else False)
@@ -308,11 +527,14 @@ def parse_args(argv):
     )
     parser.add_argument(
         "-d", "--dataset", type=str, required=True, help="Training dataset",
-        choices=["nerf", "nsvf", "colmap", "nerfpp", "scannet", "google_scanned"]
+        #choices=["nerf", "nsvf", "colmap", "nerfpp", "scannet", "google_scanned"]
     )
     parser.add_argument(
         "--test-dataset", type=str, help="Test dataset",
-        choices=["nerf", "nsvf", "colmap", "nerfpp", "scannet", "google_scanned"]
+        #choices=["nerf", "nsvf", "colmap", "nerfpp", "scannet", "google_scanned"]
+    )
+    parser.add_argument(
+        "--scene", type=str, required=True,
     )
     parser.add_argument(
         "-e",

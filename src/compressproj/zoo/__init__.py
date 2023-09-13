@@ -37,6 +37,7 @@ from .image import (
     checkerboard2021,
     mbt_de,
     mbt_de_pe,
+    mbt_nerf,
 )
 from .pretrained import load_pretrained as load_state_dict
 from .video import ssf2020
@@ -48,6 +49,7 @@ image_models = {
     "mbt2018": mbt2018,
     "mbt-de": mbt_de,
     "mbt-de-pe": mbt_de_pe,
+    "mbt-nerf": mbt_nerf,
     "cheng2020-anchor": cheng2020_anchor,
     "cheng2020-attn": cheng2020_attn,
     "checkerboard2012": checkerboard2021,

@@ -9,6 +9,18 @@ NEAR_DISTANCE = 0.01
 
 
 @torch.cuda.amp.autocast()
+def render_depth_map(model, rays_o, rays_d, **kwargs):
+    rays_o = rays_o.contiguous(); rays_d = rays_d.contiguous()
+    _, hits_t, _ = \
+        RayAABBIntersector.apply(rays_o, rays_d, model.center, model.half_size, 1)
+    hits_t[(hits_t[:, 0, 0]>=0)&(hits_t[:, 0, 0]<NEAR_DISTANCE), 0, 0] = NEAR_DISTANCE
+
+    results = __render_rays_test(model, rays_o, rays_d, hits_t, **kwargs)
+    depth = results["depth"]
+    return depth
+
+
+@torch.cuda.amp.autocast()
 def render(model, rays_o, rays_d, **kwargs):
     """
     Render rays by

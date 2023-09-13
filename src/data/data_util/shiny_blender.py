@@ -110,7 +110,6 @@ def load_shiny_blender_data(
 
     images = np.concatenate(images, 0)
     normals = np.concatenate(normals, 0)
-
     extrinsics = np.concatenate(extrinsics, 0)
 
     extrinsics[:, :3, 3] *= cam_scale_factor

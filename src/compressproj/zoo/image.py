@@ -39,6 +39,7 @@ from src.compressproj.models import (
     JointCheckerboardHierarchicalPriors,
     DE_Minnen2018,
     DE_PE_Minnen2018,
+    NeRF_Minnen2018,
 )
 
 from .pretrained import load_pretrained
@@ -50,6 +51,7 @@ __all__ = [
     "mbt2018_mean",
     "mbt_de",
     "mbt_de_pe",
+    "mbt_nerf",
     "cheng2020_anchor",
     "cheng2020_attn",
     "checkerboard2021",
@@ -62,6 +64,7 @@ model_architectures = {
     "mbt2018": JointAutoregressiveHierarchicalPriors,
     "mbt-de": DE_Minnen2018,
     "mbt-de-pe": DE_PE_Minnen2018,
+    "mbt-nerf": NeRF_Minnen2018,
     "cheng2020-anchor": Cheng2020Anchor,
     "cheng2020-attn": Cheng2020Attention,
     "checkerboard2021": JointCheckerboardHierarchicalPriors,
@@ -278,6 +281,16 @@ cfgs = {
         7: (192, 320),
         8: (192, 320),
     },
+    "mbt-nerf": {
+        1: (192, 192),
+        2: (192, 192),
+        3: (192, 192),
+        4: (192, 192),
+        5: (192, 320),
+        6: (192, 320),
+        7: (192, 320),
+        8: (192, 320),
+    },
     "checkerboard2021": {
         1: (192, 192),
         2: (192, 192),
@@ -434,6 +447,22 @@ def mbt_de_pe(quality, metric="mse", pretrained=False, progress=True, **kwargs):
         raise ValueError(f'Invalid quality "{quality}", should be between (1, 8)')
 
     return _load_model("mbt-de-pe", metric, quality, pretrained, progress, **kwargs)
+
+
+def mbt_nerf(quality, metric="mse", pretrained=False, progress=True, **kwargs):
+    r"""Joint Autoregressive Hierarchical Priors model from D.
+    Minnen, J. Balle, G.D. Toderici: `"Joint Autoregressive and Hierarchical
+    Priors for Learned Image Compression" <https://arxiv.org/abs/1809.02736>`_,
+    Adv. in Neural Information Processing Systems 31 (NeurIPS 2018).
+
+    Args:
+        quality (int): Quality levels (1: lowest, highest: 8)
+        metric (str): Optimized metric, choose from ('mse', 'ms-ssim')
+        pretrained (bool): If True, returns a pre-trained model
+        progress (bool): If True, displays a progress bar of the download to stderr
+    """
+    error_check(metric, quality)
+    return _load_model("mbt-nerf", metric, quality, pretrained, progress, **kwargs)
 
 
 def checkerboard2021(quality, metric="mse", pretrained=False, progress=True, **kwargs):
