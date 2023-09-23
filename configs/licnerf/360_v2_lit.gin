@@ -1,0 +1,76 @@
+### 360-v2 Specific Arguments
+
+run.dataset_name = "nerf_360_v2"
+run.datadir = "~/datasets/nerf_360_v2"
+run.logbase = "~/logs"
+#run.ckpt_path = "~/checkpoints/mipnerf_nerf_360_v2_garden"
+
+run.run_train = False
+run.run_eval = True
+run.run_render = True
+
+run.research_model_name = "transformed_lic"
+run.lic_model_name = "mbt2018"
+run.nerf_model_name = "mipnerf"
+run.quality = 4
+
+### Optimization
+run.max_steps = 1e6
+run.max_epochs = 250000
+run.precision = 32
+
+### Logging
+run.log_every_n_steps = 100
+run.progressbar_refresh_rate = 5
+
+### Train configs
+MipNeRFTransformedLIC.lmbda             = 0.0130                                # !important
+#MipNeRFTransformedLIC.learning_rate     = 1e-4
+#MipNeRFTransformedLIC.aux_learning_rate = 1e-3
+#MipNeRFTransformedLIC.gamma             = 0.8
+MipNeRFTransformedLIC.lr_init           = 5e-4
+MipNeRFTransformedLIC.lr_final          = 5e-6
+MipNeRFTransformedLIC.lr_delay_steps    = 2500
+MipNeRFTransformedLIC.lr_delay_mult     = 0.01
+MipNeRFTransformedLIC.coarse_loss_mult  = 0.1
+MipNeRFTransformedLIC.randomized        = True
+MipNeRFTransformedLIC.use_multiscale    = True
+MipNeRFTransformedLIC.train_nerf        = False
+
+### MipNeRF configs (including standard specific arguments)
+MipNeRF.num_samples                     = 128
+MipNeRF.num_levels                      = 4 # multi-resolution levels (1 == no multi resolution)
+MipNeRF.resample_padding			    = 0.01
+MipNeRF.stop_level_grad					= True
+MipNeRF.use_viewdirs					= True
+MipNeRF.lindisp					        = False
+MipNeRF.ray_shape					    = "cone"
+MipNeRF.min_deg_point					= 0
+MipNeRF.max_deg_point					= 16
+MipNeRF.deg_view					    = 4
+MipNeRF.density_noise					= 1.
+MipNeRF.density_bias					= -1
+MipNeRF.rgb_padding						= 0.001
+MipNeRF.disable_integration				= False
+
+
+### LIC configs
+#LitJointAutoregressiveHierarchicalPriors.N=192
+#LitJointAutoregressiveHierarchicalPriors.M=192
+#LitJointAutoregressiveHierarchicalPriors.lr_init=1e-4
+#LitJointAutoregressiveHierarchicalPriors.lr_final=5e-6
+#LitJointAutoregressiveHierarchicalPriors.lr_scheduler_gamma=1/3
+#LitJointAutoregressiveHierarchicalPriors.lr_mildestones=[150, 180, 210, 240]
+
+LitData.batch_sampler = "all_images"
+
+### MipNeRF Standard Specific Arguments
+
+LitData.load_radii = True
+#LitData.batch_size = 4096
+LitData.batch_size = 1024
+LitData.chunk = 8192
+LitData.use_pixel_centers = True
+LitData.epoch_size = 250000
+
+LitDataNeRF360V2.cam_scale_factor = 0.125
