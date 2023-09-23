@@ -41,6 +41,7 @@ def main(argv):
     args = parse_args(argv)
 
     args.seed = 777 # for synchronize randomcropped depth map
+
     if args.seed is not None:
         print(f":: Log :: Seed is set to {args.seed}")
         torch.manual_seed(args.seed)

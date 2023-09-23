@@ -18,3 +18,10 @@ dataloader/co3d_lists/*
 !dataloader/co3d_lists/.gitkeep
 
 *checkpoints*
+*.pub
+*.xlsx
+*.pyd
+*.ckpt
+*.out
+*.mod
+*.sum

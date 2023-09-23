@@ -6,3 +6,4 @@ if __name__ == "__main__":
 	model = image_models['mbt-de'](quality=4)
 	model = model.to("cuda")
 	print("completed")
+

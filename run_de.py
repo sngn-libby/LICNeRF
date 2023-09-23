@@ -117,10 +117,9 @@ def main(argv):
         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
 
     print(":: Log :: last epoch:", last_epoch)
-
     de_model.eval()
 
-    loss = validate(epoch, lic_model, de_model, test_dataloader, criterion)
+    loss = validate(0, lic_model, de_model, test_dataloader, criterion)
     test_model(last_epoch, lic_model, de_model, test_dataloader, args.lmbda)
 
     best_loss = np.inf
@@ -221,7 +220,6 @@ def validate(
     with torch.no_grad():
         for d in test_dataloader:
             d = d.to(device)
-            
             depth_est = de_model(d)
             d_flip = flip_lr(d)
             depth_est_flip = de_model(d_flip)
@@ -272,7 +270,6 @@ def test_model(
             d_flip = flip_lr(d)
             depth_est_flip = de_model(d_flip)
             depth = post_process_depth(depth_est, depth_est_flip)
-
             cat = torch.cat([d, depth], dim=1)
 
             out_enc = lic_model.compress(cat)
