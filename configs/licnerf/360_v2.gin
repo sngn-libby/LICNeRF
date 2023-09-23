@@ -1,18 +1,55 @@
 ### 360-v2 Specific Arguments
 
 run.dataset_name = "nerf_360_v2"
-run.datadir = "D:/datasets/360_v2"
+run.datadir = "~/datasets/nerf_360_v2"
+run.logbase = "~/logs"
+run.ckpt_path = "~/checkpoints/mipnerf_nerf_360_v2_garden"
+
+### Train configs
+run.lmbda=0.0130                                # !important
+run.learning_rate=1e-4
+run.aux_learning_rate=1e-3
+run.gamma=0.8
+
+### Model configs
+run.research_model_name = "transformed_lic"
+run.lic_model_name = "mbt2018"
+run.nerf_model_name = "mipnerf"
+
+### Optimization
+run.max_steps = 1e6
+run.max_epochs = 250000
+run.precision = 32
+
+### Logging
+run.log_every_n_steps = 100
+run.progressbar_refresh_rate = 5
+
+### LIC configs
+run.N=192
+run.M=192
+
+### NerF configs
+run.lr_init = 5.0e-4
+run.lr_final = 5.0e-6
+run.lr_delay_steps = 2500
+run.lr_delay_mult = 0.01
+run.coarse_loss_mult = 0.1
+run.randomized = True
+run.num_samples = 64
+run.use_multiscale = True
+run.num_levels = 4 # multi-resolution levels (1 == no multi resolution)
+run.train_nerf = False
+
 
 LitData.batch_sampler = "all_images"
 
 
 ### MipNeRF Standard Specific Arguments
-run.model_name = "mipnerf"
-run.max_steps = 1e6
-run.log_every_n_steps = 100
 
 LitData.load_radii = True
-LitData.batch_size = 4096
+#LitData.batch_size = 4096
+LitData.batch_size = 1024
 LitData.chunk = 8192
 LitData.use_pixel_centers = True
 LitData.epoch_size = 250000

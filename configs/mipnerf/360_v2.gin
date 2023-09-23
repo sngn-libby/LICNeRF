@@ -1,7 +1,8 @@
 ### 360-v2 Specific Arguments
 
 run.dataset_name = "nerf_360_v2"
-run.datadir = "data/nerf_360_v2"
+run.datadir = "/home/seun1105/datasets/nerf_360_v2"
+run.logbase = "/home/seun1105/logs"
 
 LitData.batch_sampler = "all_images"
 

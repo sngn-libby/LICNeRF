@@ -24,26 +24,78 @@ from src.model.nerfpp.model import LitNeRFPP
 from src.model.plenoxel.model import LitPlenoxel
 from src.model.refnerf.model import LitRefNeRF
 
+from src.model.dvgo.dvgo import DirectVoxGO
+from src.model.mipnerf360.model import MipNeRF360
+from src.model.mipnerf.model import MipNeRF
+from src.model.nerf.model import NeRF
+from src.model.nerfpp.model import NeRFPP
+from src.model.plenoxel.sparse_grid import SparseGrid
+from src.model.refnerf.model import RefNeRF
 
-def select_model(
-    model_name: str,
+from src.compressproj.zoo import image_models
+from src.compressproj.models.google import JointAutoregressiveHierarchicalPriors
+from src.compressproj.models.sensetime import JointCheckerboardHierarchicalPriors
+
+from licnerf.model import (
+    MipNeRFTransformedLIC,
+)
+
+
+research_models = {
+    "transformed_lic": MipNeRFTransformedLIC,
+}
+
+lic_models = {
+    "mbt2018": JointAutoregressiveHierarchicalPriors,
+    "checkerboard": JointCheckerboardHierarchicalPriors,
+}
+
+base_nerf_models = {
+    "nerf": NeRF,
+    "mipnerf": MipNeRF,
+    "mipnerf360": MipNeRF360,
+    "plenoxel": SparseGrid,
+    "nerfppp": NeRFPP,
+    "dvgo": DirectVoxGO,
+    "refnerf": RefNeRF,
+}
+
+nerf_models = {
+    "nerf": LitNeRF,
+    "mipnerf": LitMipNeRF,
+    "mipnerf360": LitMipNeRF360,
+    "plenoxel": LitPlenoxel,
+    "nerfppp": LitNeRFPP,
+    "dvgo": LitDVGO,
+    "refnerf": LitRefNeRF,
+    # "nerfusion": LitNeRFusion,
+}
+
+
+def select_research_model(
+        research_model_name: str,
+        lic_model_name: str = "mbt2018",
+        nerf_model_name: str = None,
+        quality=4,
+        **kwargs
 ):
+    assert research_model_name in research_models
+    assert lic_model_name in image_models
+    assert nerf_model_name in base_nerf_models
 
-    if model_name == "nerf":
-        return LitNeRF()
-    elif model_name == "mipnerf":
-        return LitMipNeRF()
-    elif model_name == "plenoxel":
-        return LitPlenoxel()
-    elif model_name == "nerfpp":
-        return LitNeRFPP()
-    elif model_name == "dvgo":
-        return LitDVGO()
-    elif model_name == "refnerf":
-        return LitRefNeRF()
-    elif model_name == "mipnerf360":
-        return LitMipNeRF360()
+    nerf_model = base_nerf_models[nerf_model_name]()
+    lic_model = image_models[lic_model_name](quality=quality)
 
+    return research_models[research_model_name](lic_model=lic_model,
+                                                nerf_model=nerf_model,
+                                                **kwargs)
+
+
+def select_nerf_model(
+        model_name: str,
+):
+    if model_name in nerf_models:
+        return nerf_models[model_name]()
     else:
         raise f"Unknown model named {model_name}"
 
@@ -52,7 +104,7 @@ def select_dataset(
     dataset_name: str,
     datadir: str,
     scene_name: str,
-    add_noise: float=0,
+    # add_noise: float=0,
 ):
     if dataset_name == "blender":
         data_fun = LitDataBlender
@@ -75,7 +127,7 @@ def select_dataset(
     return data_fun(
         datadir=datadir,
         scene_name=scene_name,
-        add_noise=add_noise,
+        # add_noise=add_noise,
     )
 
 
