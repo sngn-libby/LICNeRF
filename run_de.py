@@ -34,6 +34,11 @@ from src.compressproj.zoo import image_models
 from src.newcrfs.NewCRFDepth import NewCRFDepth
 from src.newcrfs.utils import *
 
+from src.compressproj.datasets import ImageFolderDEcluster
+#from kmeans_pytorch import kmeans
+from kmeans_gpu import KMeans as kmeans
+from einops import rearrange
+
 torch.set_printoptions(sci_mode=False)
 
 
@@ -53,9 +58,11 @@ def main(argv):
         [transforms.CenterCrop(args.patch_size), transforms.ToTensor()]
     )
 
-    train_dataset = ImageFolderDE(args.dataset, split="train", transform=train_transforms)
+    #train_dataset = ImageFolderDE(args.dataset, split="train", transform=train_transforms)
+    train_dataset = ImageFolderDEcluster(args.dataset, split="train", transform=train_transforms)
     test_dataset = ImageFolder(args.dataset, split="test", transform=test_transforms)
     kodak_dataset = ImageFolder(args.test_dataset, split="kodak", transform=test_transforms)
+    #kodak_dataset = ImageFolder(args.test_dataset, split="test", transform=test_transforms)
 
     device = "cuda" if args.cuda and torch.cuda.is_available() else "cpu"
     print(f":: Log :: {device.upper()}, #{torch.cuda.device_count()}")
@@ -225,9 +232,23 @@ def validate(
             depth_est_flip = de_model(d_flip)
             depth = post_process_depth(depth_est, depth_est_flip)
 
-            cat = torch.cat([d, depth], dim=1)
+            #cat = torch.cat([d, depth], dim=1)
+            
+            ## clustering
+            data = torch.cat([d, depth], dim=1)
+            b, c, w, h = data.shape
+            data_px = data.clone().reshape(b, c, -1)
+            data_px = rearrange(data_px, 'b c wh -> b wh c')
+            first_cluster_idx = kmeans(X=data_px[0], num_clusters=30, distance='cosine').unsqueeze(dim=0)
+            for one_img in data_px[1:]: # data_px[1], ... data_px[b-1]
+                one_cluster_idx = kmeans(X=one_img, num_clusters=30, distance='cosine').unsqueeze(dim=0)
+                cluster_idx = torch.cat([first_cluster_idx, one_cluster_idx], dim=0) # [b, wh, c]
+            cluster_idx = rearrange(cluster_idx, 'b wh c -> b c wh')    
+            cluster_idx = cluster_idx.reshape(b, 1, w, h)
+            clustered_img = torch.cat([data, cluster_idx], dim=1)
+            out = lic_model(clustered_img)
 
-            out = lic_model(cat)
+            #out = lic_model(cat)
             out_criterion = criterion(out, d)
 
             aux_loss.update(lic_model.aux_loss())
@@ -270,10 +291,26 @@ def test_model(
             d_flip = flip_lr(d)
             depth_est_flip = de_model(d_flip)
             depth = post_process_depth(depth_est, depth_est_flip)
-            cat = torch.cat([d, depth], dim=1)
-
-            out_enc = lic_model.compress(cat)
+            
+            ## clustering
+            data = torch.cat([d, depth], dim=1)
+            b, c, w, h = data.shape
+            data_px = data.clone().reshape(b, c, -1)
+            data_px = rearrange(data_px, 'b c wh -> b wh c')
+            first_cluster_idx = kmeans(X=data_px[0], num_clusters=30, distance='cosine').unsqueeze(dim=0)
+            for one_img in data_px[1:]: # data_px[1], ... data_px[b-1]
+                one_cluster_idx = kmeans(X=one_img, num_clusters=30, distance='cosine').unsqueeze(dim=0)
+                cluster_idx = torch.cat([first_cluster_idx, one_cluster_idx], dim=0) # [b, wh, c]
+            cluster_idx = rearrange(cluster_idx, 'b wh c -> b c wh')    
+            cluster_idx = cluster_idx.reshape(b, 1, w, h)
+            clustered_img = torch.cat([data, cluster_idx], dim=1)
+            out_enc = lic_model.compress(clustered_img)
             out_dec = lic_model.decompress(strings=out_enc["strings"], shape=out_enc["shape"])
+            
+            #cat = torch.cat([d, depth], dim=1)
+
+            #out_enc = lic_model.compress(cat)
+            #out_dec = lic_model.decompress(strings=out_enc["strings"], shape=out_enc["shape"])
 
             bpp = update_meter(bpp_loss, d, out_enc, out_dec, "bpp")
             mse = update_meter(mse_loss, d, out_enc, out_dec, "mse")
