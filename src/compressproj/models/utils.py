@@ -1169,7 +1169,7 @@ def parse_args(argv):
         "-d", "--dataset", type=str, required=True, help="Training dataset"
     )
     parser.add_argument(
-        "--test-dataset", type=str, help="Test dataset"
+        "-td", "--test-dataset", type=str, help="Test dataset"
     )
     parser.add_argument(
         "-e",
